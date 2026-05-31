@@ -502,16 +502,12 @@ class TrainConfig:
 
     # Random seed that will be used by random generators during training.
     seed: int = 42
-    # Global batch size for each forward/backward pass. When gradient accumulation is used, the effective global batch
-    # size is batch_size * gradient_accumulation_steps.
+    # Global batch size.
     batch_size: int = 32
-    # Number of microbatches to accumulate before each optimizer update.
-    gradient_accumulation_steps: int = 1
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
-    # Number of optimizer update steps to run. With gradient accumulation, each step consumes
-    # gradient_accumulation_steps microbatches.
+    # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
     # How often (in steps) to log training metrics.
@@ -558,8 +554,6 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
-        if self.gradient_accumulation_steps < 1:
-            raise ValueError("gradient_accumulation_steps must be >= 1.")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -750,11 +744,11 @@ _CONFIGS = [
         name="pi05_libero",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
-            repo_id="lerobot/libero_pi",
+            repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=64, # 256
+        batch_size=256,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -763,30 +757,8 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
-        pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
-        num_train_steps=30_000,
-    ),
-    #: libero_custom
-    TrainConfig(
-        name="pi05_libero_custom",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        data=LeRobotLiberoDataConfig(
-            repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-        ),
-        batch_size=64, # 256
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000,
-            peak_lr=5e-5,
-            decay_steps=1_000_000,
-            decay_lr=5e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
-        pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
     #

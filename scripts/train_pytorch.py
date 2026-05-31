@@ -23,6 +23,7 @@ Multi-Node Training:
 
 """
 
+import contextlib
 import dataclasses
 import gc
 import logging
@@ -346,13 +347,15 @@ def train_loop(config: _config.TrainConfig):
     if is_main:
         init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
-    # Build data loader using the unified data loader
-    # Calculate effective batch size per GPU for DDP
-    # For N GPUs, each GPU should get batch_size/N samples, so total across all GPUs is batch_size
+    # Build data loader using the unified data loader. For N DDP processes, each process gets batch_size/N samples
+    # per microbatch. Gradient accumulation increases the effective global batch size without changing that loader batch.
     world_size = torch.distributed.get_world_size() if use_ddp else 1
-    effective_batch_size = config.batch_size // world_size
+    per_device_batch_size = config.batch_size // world_size
+    effective_batch_size = config.batch_size * config.gradient_accumulation_steps
     logging.info(
-        f"Using batch size per GPU: {effective_batch_size} (total batch size across {world_size} GPUs: {config.batch_size})"
+        f"Using batch size per GPU: {per_device_batch_size} "
+        f"(micro global batch size: {config.batch_size}, accumulation steps: {config.gradient_accumulation_steps}, "
+        f"effective global batch size: {effective_batch_size})"
     )
 
     # Pass the original batch size to data loader - it will handle DDP splitting internally
@@ -487,7 +490,9 @@ def train_loop(config: _config.TrainConfig):
             f"Running on: {platform.node()} | world_size={torch.distributed.get_world_size() if use_ddp else 1}"
         )
         logging.info(
-            f"Training config: batch_size={config.batch_size}, effective_batch_size={effective_batch_size}, num_train_steps={config.num_train_steps}"
+            f"Training config: micro_batch_size={config.batch_size}, "
+            f"gradient_accumulation_steps={config.gradient_accumulation_steps}, "
+            f"effective_batch_size={effective_batch_size}, num_train_steps={config.num_train_steps}"
         )
         logging.info(f"Memory optimizations: gradient_checkpointing={enable_gradient_checkpointing}")
         logging.info(
@@ -506,110 +511,126 @@ def train_loop(config: _config.TrainConfig):
         else None
     )
 
+    data_iter = iter(loader)
+    optim.zero_grad(set_to_none=True)
+
     while global_step < config.num_train_steps:
-        # Set epoch for distributed training
+        # Set epoch for distributed training if the loader exposes it.
         if use_ddp and hasattr(loader, "set_epoch"):
-            loader.set_epoch(global_step // len(loader))
+            loader.set_epoch(global_step)
 
-        for observation, actions in loader:
-            # Check if we've reached the target number of steps
-            if global_step >= config.num_train_steps:
-                break
+        # Update LR once per optimizer step.
+        for pg in optim.param_groups:
+            pg["lr"] = lr_schedule(global_step)
 
-            # The unified data loader returns (observation, actions) tuple
-            observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
-            actions = actions.to(torch.float32)  # noqa: PLW2901
-            actions = actions.to(device)  # noqa: PLW2901
+        step_loss = 0.0
+        for micro_step in range(config.gradient_accumulation_steps):
+            try:
+                observation, actions = next(data_iter)
+            except StopIteration:
+                data_iter = iter(loader)
+                observation, actions = next(data_iter)
 
-            # Update LR
-            for pg in optim.param_groups:
-                pg["lr"] = lr_schedule(global_step)
+            # The unified data loader returns (observation, actions) tuple.
+            observation = jax.tree.map(lambda x: x.to(device), observation)
+            actions = actions.to(torch.float32)
+            actions = actions.to(device)
 
-            # Forward pass
-            losses = model(observation, actions)
-            # Ensure losses is a tensor and handle different return types
-            if isinstance(losses, list | tuple):
-                losses = torch.stack(losses)
-            elif not isinstance(losses, torch.Tensor):
-                losses = torch.tensor(losses, device=device, dtype=torch.float32)
+            sync_context = contextlib.nullcontext()
+            if (
+                use_ddp
+                and micro_step < config.gradient_accumulation_steps - 1
+                and isinstance(model, torch.nn.parallel.DistributedDataParallel)
+            ):
+                sync_context = model.no_sync()
 
-            loss = losses.mean()
+            with sync_context:
+                # Forward pass
+                losses = model(observation, actions)
+                # Ensure losses is a tensor and handle different return types
+                if isinstance(losses, list | tuple):
+                    losses = torch.stack(losses)
+                elif not isinstance(losses, torch.Tensor):
+                    losses = torch.tensor(losses, device=device, dtype=torch.float32)
 
-            # Backward pass
-            loss.backward()
+                loss = losses.mean()
+                scaled_loss = loss / config.gradient_accumulation_steps
 
-            # Log memory usage after backward pass
-            if global_step < 5 and is_main and torch.cuda.is_available():
-                log_memory_usage(device, global_step, "after_backward")
+                # Backward pass
+                scaled_loss.backward()
 
-            # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            step_loss += loss.detach().item()
 
-            # Optimizer step
-            optim.step()
-            optim.zero_grad(set_to_none=True)
+        # Log memory usage after the accumulated backward pass
+        if global_step < 5 and is_main and torch.cuda.is_available():
+            log_memory_usage(device, global_step, "after_backward")
 
-            # Clear gradients more aggressively
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.detach_()
-                    param.grad = None
+        # Gradient clipping and optimizer step happen once per accumulated batch.
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+        optim.step()
+        optim.zero_grad(set_to_none=True)
 
-            # Collect stats
-            if is_main:
-                infos.append(
-                    {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    }
-                )
+        # Clear gradients more aggressively
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.detach_()
+                param.grad = None
 
-            if is_main and (global_step % config.log_interval == 0):
-                elapsed = time.time() - start_time
+        avg_step_loss = step_loss / config.gradient_accumulation_steps
 
-                # Average stats over log interval
-                avg_loss = sum(info["loss"] for info in infos) / len(infos)
-                avg_lr = sum(info["learning_rate"] for info in infos) / len(infos)
+        # Collect stats
+        if is_main:
+            infos.append(
+                {
+                    "loss": avg_step_loss,
+                    "learning_rate": optim.param_groups[0]["lr"],
+                    "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                }
+            )
 
-                avg_grad_norm = None
-                if any("grad_norm" in info for info in infos):
-                    vals = [
-                        info["grad_norm"] for info in infos if "grad_norm" in info and info["grad_norm"] is not None
-                    ]
-                    if len(vals) > 0:
-                        avg_grad_norm = sum(vals) / len(vals)
-                logging.info(
-                    f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
-                    if avg_grad_norm is not None
-                    else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
-                )
+        if is_main and (global_step % config.log_interval == 0):
+            elapsed = time.time() - start_time
 
-                # Log to wandb
-                if config.wandb_enabled and len(infos) > 0:
-                    log_payload = {
-                        "loss": avg_loss,
-                        "learning_rate": avg_lr,
-                        "step": global_step,
-                        "time_per_step": elapsed / config.log_interval,
-                    }
-                    if avg_grad_norm is not None:
-                        log_payload["grad_norm"] = avg_grad_norm
-                    wandb.log(log_payload, step=global_step)
+            # Average stats over log interval
+            avg_loss = sum(info["loss"] for info in infos) / len(infos)
+            avg_lr = sum(info["learning_rate"] for info in infos) / len(infos)
 
-                start_time = time.time()
-                infos = []  # Reset stats collection
+            avg_grad_norm = None
+            if any("grad_norm" in info for info in infos):
+                vals = [info["grad_norm"] for info in infos if "grad_norm" in info and info["grad_norm"] is not None]
+                if len(vals) > 0:
+                    avg_grad_norm = sum(vals) / len(vals)
+            logging.info(
+                f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
+                if avg_grad_norm is not None
+                else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
+            )
 
-            global_step += 1
-            # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main, data_config)
+            # Log to wandb
+            if config.wandb_enabled and len(infos) > 0:
+                log_payload = {
+                    "loss": avg_loss,
+                    "learning_rate": avg_lr,
+                    "step": global_step,
+                    "time_per_step": elapsed / config.log_interval,
+                }
+                if avg_grad_norm is not None:
+                    log_payload["grad_norm"] = avg_grad_norm
+                wandb.log(log_payload, step=global_step)
 
-            # Update progress bar
-            if pbar is not None:
-                pbar.update(1)
-                pbar.set_postfix(
-                    {"loss": f"{loss.item():.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
-                )
+            start_time = time.time()
+            infos = []  # Reset stats collection
+
+        global_step += 1
+        # Save checkpoint using the new mechanism
+        save_checkpoint(model, optim, global_step, config, is_main, data_config)
+
+        # Update progress bar
+        if pbar is not None:
+            pbar.update(1)
+            pbar.set_postfix(
+                {"loss": f"{avg_step_loss:.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
+            )
 
     # Close progress bar
     if pbar is not None:

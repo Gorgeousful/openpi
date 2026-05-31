@@ -134,12 +134,12 @@ def init_train_state(
 
 
 @at.typecheck
-def train_step(
+def compute_grads_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
     batch: tuple[_model.Observation, _model.Actions],
-) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+):
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
@@ -150,12 +150,23 @@ def train_step(
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
         return jnp.mean(chunked_loss)
 
-    train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, rng, observation, actions)
+    return loss, grads
+
+
+@at.typecheck
+def apply_grads_step(
+    config: _config.TrainConfig,
+    state: training_utils.TrainState,
+    grads,
+    loss: at.Array,
+) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+    model = nnx.merge(state.model_def, state.params)
+    model.train()
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -191,6 +202,18 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def train_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+    train_rng = jax.random.fold_in(rng, state.step)
+    loss, grads = compute_grads_step(config, train_rng, state, batch)
+    return apply_grads_step(config, state, grads, loss)
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -199,6 +222,15 @@ def main(config: _config.TrainConfig):
         raise ValueError(
             f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
         )
+
+    accumulation_steps = config.gradient_accumulation_steps
+    effective_batch_size = config.batch_size * accumulation_steps
+    logging.info(
+        "Gradient accumulation: micro_batch_size=%d, accumulation_steps=%d, effective_batch_size=%d",
+        config.batch_size,
+        accumulation_steps,
+        effective_batch_size,
+    )
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
@@ -246,6 +278,16 @@ def main(config: _config.TrainConfig):
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
     )
+    pcompute_grads_step = jax.jit(
+        functools.partial(compute_grads_step, config),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+    )
+    papply_grads_step = jax.jit(
+        functools.partial(apply_grads_step, config),
+        in_shardings=(train_state_sharding, None, replicated_sharding),
+        out_shardings=(train_state_sharding, replicated_sharding),
+        donate_argnums=(0,),
+    )
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
@@ -257,8 +299,26 @@ def main(config: _config.TrainConfig):
 
     infos = []
     for step in pbar:
-        with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
+        if accumulation_steps == 1:
+            with sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+            batch = next(data_iter)
+        else:
+            loss_accum = None
+            accum_grads = None
+            for micro_step in range(accumulation_steps):
+                micro_rng = jax.random.fold_in(train_rng, step * accumulation_steps + micro_step)
+                with sharding.set_mesh(mesh):
+                    loss, grads = pcompute_grads_step(micro_rng, train_state, batch)
+                loss_accum = loss if loss_accum is None else loss_accum + loss
+                accum_grads = grads if accum_grads is None else jax.tree.map(lambda a, b: a + b, accum_grads, grads)
+                batch = next(data_iter)
+
+            avg_loss = loss_accum / accumulation_steps
+            avg_grads = jax.tree.map(lambda g: g / accumulation_steps, accum_grads)
+            with sharding.set_mesh(mesh):
+                train_state, info = papply_grads_step(train_state, avg_grads, avg_loss)
+
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
@@ -267,7 +327,6 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
-        batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
