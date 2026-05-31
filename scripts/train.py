@@ -214,6 +214,20 @@ def train_step(
     return apply_grads_step(config, state, grads, loss)
 
 
+def _skip_resume_batches(data_iter, data_loader, num_batches: int):
+    if num_batches <= 0:
+        return data_iter
+
+    logging.info("Skipping %d microbatches to restore resume data position.", num_batches)
+    for _ in tqdm.tqdm(range(num_batches), desc="Skipping resume data", dynamic_ncols=True):
+        try:
+            next(data_iter)
+        except StopIteration:
+            data_iter = iter(data_loader)
+            next(data_iter)
+    return data_iter
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -255,15 +269,6 @@ def main(config: _config.TrainConfig):
         shuffle=True,
     )
     data_iter = iter(data_loader)
-    batch = next(data_iter)
-    logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
-
-    # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -271,6 +276,21 @@ def main(config: _config.TrainConfig):
 
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+
+    start_step = int(train_state.step)
+    if resuming and start_step < config.num_train_steps:
+        data_iter = _skip_resume_batches(data_iter, data_loader, start_step * accumulation_steps)
+
+    batch = next(data_iter)
+    logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+
+    # Log images from first batch to sanity check.
+    if not resuming:
+        images_to_log = [
+            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+            for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        ]
+        wandb.log({"camera_views": images_to_log}, step=0)
 
     ptrain_step = jax.jit(
         functools.partial(train_step, config),
@@ -289,7 +309,6 @@ def main(config: _config.TrainConfig):
         donate_argnums=(0,),
     )
 
-    start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,

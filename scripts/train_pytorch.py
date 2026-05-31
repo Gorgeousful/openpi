@@ -282,6 +282,26 @@ def get_latest_checkpoint_step(checkpoint_dir):
     return max(checkpoint_steps) if checkpoint_steps else None
 
 
+def skip_resume_batches(data_iter, loader, num_batches: int, *, is_main: bool):
+    if num_batches <= 0:
+        return data_iter
+
+    logging.info("Skipping %d microbatches to restore resume data position.", num_batches)
+    progress = tqdm.tqdm(
+        range(num_batches),
+        desc="Skipping resume data",
+        disable=not is_main,
+        dynamic_ncols=True,
+    )
+    for _ in progress:
+        try:
+            next(data_iter)
+        except StopIteration:
+            data_iter = iter(loader)
+            next(data_iter)
+    return data_iter
+
+
 def log_memory_usage(device, step, phase="unknown"):
     """Log detailed memory usage information."""
     if not torch.cuda.is_available():
@@ -512,6 +532,14 @@ def train_loop(config: _config.TrainConfig):
     )
 
     data_iter = iter(loader)
+    if resuming and global_step < config.num_train_steps:
+        data_iter = skip_resume_batches(
+            data_iter,
+            loader,
+            global_step * config.gradient_accumulation_steps,
+            is_main=is_main,
+        )
+        start_time = time.time()
     optim.zero_grad(set_to_none=True)
 
     while global_step < config.num_train_steps:
