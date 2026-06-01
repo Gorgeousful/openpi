@@ -12,8 +12,9 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48):
+    def __init__(self, max_len: int = 48, aux_max_len: int = 200):
         self._max_len = max_len
+        self._aux_max_len = aux_max_len
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -47,6 +48,45 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
+    def tokenize_auxiliary(
+        self, auxiliary_targets: dict[str, object], *, fast_action_tokens: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        lines = []
+        for key, title in (("grounding", "Grounding"), ("subtask", "Subtask"), ("phase", "Phase")):
+            value = auxiliary_targets.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                value = value.item() if np.asarray(value).ndim == 0 else str(value)
+            value = str(value).strip()
+            if not value:
+                continue
+
+            lines.append(f"{title}: {value}")
+
+        tokens = self._tokenizer.encode("\n".join(lines))
+        if fast_action_tokens is not None:
+            separator = "\n" if tokens else ""
+            tokens.extend(self._tokenizer.encode(f"{separator}Action: "))
+            tokens.extend(np.asarray(fast_action_tokens).tolist())
+        if tokens:
+            tokens.extend(self._tokenizer.encode("|", add_eos=True))
+        token_mask = [True] * len(tokens)
+        if len(tokens) < self._aux_max_len:
+            padding = [False] * (self._aux_max_len - len(tokens))
+            tokens.extend([0] * len(padding))
+            token_mask.extend(padding)
+        else:
+            if len(tokens) > self._aux_max_len:
+                logging.warning(
+                    f"Auxiliary token length ({len(tokens)}) exceeds max length ({self._aux_max_len}), truncating. "
+                    "Consider increasing `aux_max_len` in `PaligemmaTokenizer` if this happens frequently."
+                )
+            tokens = tokens[: self._aux_max_len]
+            token_mask = token_mask[: self._aux_max_len]
+
+        return np.asarray(tokens), np.asarray(token_mask)
+
 
 class FASTTokenizer:
     def __init__(self, max_len: int = 256, fast_tokenizer_path: str = "physical-intelligence/fast"):
@@ -76,8 +116,7 @@ class FASTTokenizer:
 
         if actions is not None:
             # Tokenize actions with FAST tokenizer --> map to last tokens in PaliGemma vocab
-            action_tokens = self._fast_tokenizer(actions[None])[0]
-            action_tokens_in_pg = self._act_tokens_to_paligemma_tokens(action_tokens)
+            action_tokens_in_pg = self.tokenize_actions(actions)
 
             # Convention: postfix contains 'Action:' followed by FAST tokens, followed by '|'
             postfix_tokens = (
@@ -115,6 +154,10 @@ class FASTTokenizer:
             loss_mask = loss_mask[: self._max_len]
 
         return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
+
+    def tokenize_actions(self, actions: np.ndarray) -> np.ndarray:
+        action_tokens = self._fast_tokenizer(actions[None])[0]
+        return self._act_tokens_to_paligemma_tokens(action_tokens)
 
     def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
         # Decode predicted output tokens

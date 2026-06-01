@@ -1,3 +1,4 @@
+import ast
 import dataclasses
 
 import einops
@@ -26,6 +27,40 @@ def _parse_image(image, *, horizontal_flip: bool = False) -> np.ndarray:
     if horizontal_flip:
         image = image[:, ::-1, :].copy()
     return image
+
+
+def _format_grounding_with_loc_tokens(grounding, *, image_height: int, image_width: int) -> str:
+    """Formats grounding boxes as PaliGemma location tokens."""
+    if image_height <= 0 or image_width <= 0:
+        raise ValueError("Image dimensions must be positive.")
+
+    if not isinstance(grounding, str):
+        grounding = grounding.item() if np.asarray(grounding).ndim == 0 else grounding
+    items = ast.literal_eval(grounding) if isinstance(grounding, str) else grounding
+
+    formatted_items = []
+    for name, bbox in items:
+        name = str(name).strip()
+        if not name:
+            raise ValueError("Grounding object name must not be empty.")
+        if bbox is None:
+            formatted_items.append(f"none {name}")
+            continue
+        if len(bbox) != 4:
+            raise ValueError(f"Expected [xmin, ymin, xmax, ymax] bbox for {name!r}, got {bbox!r}.")
+
+        xmin, ymin, xmax, ymax = bbox
+
+        def quantize(value, size):
+            return int(np.clip(np.rint(float(value) / size * 1023), 0, 1023))
+
+        loc_ymin = quantize(ymin, image_height)
+        loc_xmin = quantize(xmin, image_width)
+        loc_ymax = quantize(ymax, image_height)
+        loc_xmax = quantize(xmax, image_width)
+        formatted_items.append(f"<loc{loc_ymin:04d}><loc{loc_xmin:04d}><loc{loc_ymax:04d}><loc{loc_xmax:04d}> {name}")
+
+    return "; ".join(formatted_items)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +116,19 @@ class LiberoCustomInputs(transforms.DataTransformFn):
         # stored in "prompt"; the output dict always needs to have the key "prompt").
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
+
+        if "grounding" in data:
+            inputs["grounding"] = _format_grounding_with_loc_tokens(
+                data["grounding"],
+                image_height=base_image.shape[0],
+                image_width=base_image.shape[1],
+            )
+
+        if "subtask" in data:
+            inputs["subtask"] = data["subtask"]
+
+        if "phase" in data:
+            inputs["phase"] = data["phase"]
 
         return inputs
 

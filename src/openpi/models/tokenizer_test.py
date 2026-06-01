@@ -25,3 +25,32 @@ def test_fast_tokenizer():
 
     act = tokenizer.extract_actions(tokens, 3, 2)
     assert act.shape == (3, 2)
+
+
+def test_tokenize_auxiliary():
+    tokenizer = _tokenizer.PaligemmaTokenizer(max_len=10, aux_max_len=64)
+    tokens, token_masks = tokenizer.tokenize_auxiliary(
+        {"grounding": "drawer handle", "subtask": "open drawer", "phase": "approach"}
+    )
+
+    assert tokens.shape == (64,)
+    assert token_masks.shape == (64,)
+    valid_tokens = tokens[token_masks]
+    assert valid_tokens[-1] == tokenizer._tokenizer.eos_id()
+    assert tokenizer._tokenizer.decode(valid_tokens[:-1].tolist()).endswith("|")
+
+
+def test_tokenize_auxiliary_without_targets():
+    tokenizer = _tokenizer.PaligemmaTokenizer(max_len=10, aux_max_len=16)
+    tokens, token_masks = tokenizer.tokenize_auxiliary({})
+
+    assert tokens.shape == (16,)
+    assert not np.any(token_masks)
+
+
+def test_tokenize_auxiliary_with_fast_actions():
+    tokenizer = _tokenizer.PaligemmaTokenizer(max_len=10, aux_max_len=64)
+    tokens, token_masks = tokenizer.tokenize_auxiliary({}, fast_action_tokens=np.array([256110, 256425]))
+
+    valid_tokens = tokens[token_masks]
+    assert tokenizer._tokenizer.decode(valid_tokens.tolist()) == "Action: <loc0110><loc0425>|"

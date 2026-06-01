@@ -148,15 +148,17 @@ def compute_grads_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return jnp.mean(chunked_loss)
+        chunked_loss, metrics = model.compute_loss_with_metrics(rng, observation, actions, train=True)
+        return jnp.mean(chunked_loss), metrics
 
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, rng, observation, actions)
-    return loss, grads
+    (loss, metrics), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
+        model, rng, observation, actions
+    )
+    return loss, grads, metrics
 
 
 @at.typecheck
@@ -165,6 +167,7 @@ def apply_grads_step(
     state: training_utils.TrainState,
     grads,
     loss: at.Array,
+    metrics: dict[str, at.Array],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -200,6 +203,7 @@ def apply_grads_step(
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
         "learning_rate": config.lr_schedule.create()(state.step),
+        **metrics,
     }
     return new_state, info
 
@@ -212,8 +216,8 @@ def train_step(
     batch: tuple[_model.Observation, _model.Actions],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     train_rng = jax.random.fold_in(rng, state.step)
-    loss, grads = compute_grads_step(config, train_rng, state, batch)
-    return apply_grads_step(config, state, grads, loss)
+    loss, grads, metrics = compute_grads_step(config, train_rng, state, batch)
+    return apply_grads_step(config, state, grads, loss, metrics)
 
 
 def _skip_resume_batches(data_iter, data_loader, num_batches: int):
@@ -314,7 +318,7 @@ def main(config: _config.TrainConfig):
     )
     papply_grads_step = jax.jit(
         functools.partial(apply_grads_step, config),
-        in_shardings=(train_state_sharding, None, replicated_sharding),
+        in_shardings=(train_state_sharding, None, replicated_sharding, replicated_sharding),
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(0,),
     )
@@ -335,18 +339,25 @@ def main(config: _config.TrainConfig):
         else:
             loss_accum = None
             accum_grads = None
+            metrics_accum = None
             for micro_step in range(accumulation_steps):
                 micro_rng = jax.random.fold_in(train_rng, step * accumulation_steps + micro_step)
                 with sharding.set_mesh(mesh):
-                    loss, grads = pcompute_grads_step(micro_rng, train_state, batch)
+                    loss, grads, metrics = pcompute_grads_step(micro_rng, train_state, batch)
                 loss_accum = loss if loss_accum is None else loss_accum + loss
                 accum_grads = grads if accum_grads is None else jax.tree.map(lambda a, b: a + b, accum_grads, grads)
+                metrics_accum = (
+                    metrics
+                    if metrics_accum is None
+                    else jax.tree.map(lambda a, b: a + b, metrics_accum, metrics)
+                )
                 batch = next(data_iter)
 
             avg_loss = loss_accum / accumulation_steps
             avg_grads = jax.tree.map(lambda g: g / accumulation_steps, accum_grads)
+            avg_metrics = jax.tree.map(lambda metric: metric / accumulation_steps, metrics_accum)
             with sharding.set_mesh(mesh):
-                train_state, info = papply_grads_step(train_state, avg_grads, avg_loss)
+                train_state, info = papply_grads_step(train_state, avg_grads, avg_loss, avg_metrics)
 
         infos.append(info)
         if step % config.log_interval == 0:

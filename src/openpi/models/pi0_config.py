@@ -25,6 +25,7 @@ class Pi0Config(_model.BaseModelConfig):
     action_dim: int = 32
     action_horizon: int = 50
     max_token_len: int = None  # type: ignore
+    aux_max_token_len: int = None  # type: ignore
     # Pi05 has two differences from Pi0:
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
@@ -32,11 +33,19 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # Optional training-only language supervision for grounding, subtask, and phase labels.
+    aux_loss_weight: float = 0.0
+    aux_ce_chunk_size: int = 16
+    aux_fast_action: bool = False
+    aux_fast_tokenizer_path: str = "physical-intelligence/fast"
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
+        if self.aux_max_token_len is None:
+            object.__setattr__(self, "aux_max_token_len", 200)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
         if self.pytorch_compile_mode is not None:
@@ -64,7 +73,6 @@ class Pi0Config(_model.BaseModelConfig):
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
         image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
-
         with at.disable_typechecking():
             observation_spec = _model.Observation(
                 images={

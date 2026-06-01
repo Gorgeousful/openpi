@@ -16,8 +16,22 @@ pi05_libero \
 
 
 
+#: debug
+import rich; from rich.console import Console; cs = Console()
 
-# lora微调实测单卡32，显存占用约33G XLA_PYTHON_CLIENT_PREALLOCATE=false 
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+WANDB_MODE=disabled \
+JAX_PLATFORMS=cpu \
+DEBUG=1 \
+python scripts/train.py \
+pi05_libero_custom_low_mem_finetune \
+--exp-name=pi05_libero_custom_low_mem_finetune-test \
+--overwrite
+
+
+
+# lora微调实测单卡32，显存占用约33G XLA_PYTHON_CLIENT_PREALLOCATE=false   --resume
 #: expr 1
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \

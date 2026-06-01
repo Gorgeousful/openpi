@@ -114,25 +114,50 @@ class ModelTransformFactory(GroupFactory):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         match model_config.model_type:
             case _model.ModelType.PI0:
+                assert isinstance(model_config, pi0_config.Pi0Config)
+                tokenizer = _tokenizer.PaligemmaTokenizer(
+                    model_config.max_token_len, model_config.aux_max_token_len
+                )
+                fast_action_tokenizer = (
+                    _tokenizer.FASTTokenizer(fast_tokenizer_path=model_config.aux_fast_tokenizer_path)
+                    if model_config.aux_fast_action and model_config.aux_loss_weight > 0
+                    else None
+                )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
-                        _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        _transforms.TokenizePrompt(tokenizer),
+                        _transforms.TokenizeAuxiliaryTargets(
+                            tokenizer,
+                            enabled=model_config.aux_loss_weight > 0,
+                            fast_action_tokenizer=fast_action_tokenizer,
                         ),
                         _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
+                tokenizer = _tokenizer.PaligemmaTokenizer(
+                    model_config.max_token_len, model_config.aux_max_token_len
+                )
+                fast_action_tokenizer = (
+                    _tokenizer.FASTTokenizer(fast_tokenizer_path=model_config.aux_fast_tokenizer_path)
+                    if model_config.aux_fast_action and model_config.aux_loss_weight > 0
+                    else None
+                )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            tokenizer,
                             discrete_state_input=model_config.discrete_state_input,
+                        ),
+                        _transforms.TokenizeAuxiliaryTargets(
+                            tokenizer,
+                            enabled=model_config.aux_loss_weight > 0,
+                            fast_action_tokenizer=fast_action_tokenizer,
                         ),
                         _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
@@ -373,7 +398,12 @@ class LeRobotLiberoCustomDataConfig(DataConfigFactory):
                         "observation/state": "observation.state",
                         "actions": "action",
                         "prompt": "prompt",
-                    }
+                    },
+                    optional_structure={
+                        "grounding": "grounding",
+                        "subtask": "subtask",
+                        "phase": "phase",
+                    },
                 )
             ]
         )
@@ -840,7 +870,18 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_libero_custom_low_mem_finetune",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant="gemma_2b_lora", dtype="bfloat16"),
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            dtype="bfloat16",
+            aux_loss_weight=0.1,
+            aux_max_token_len=200,
+            aux_ce_chunk_size=16,
+            aux_fast_action=True,
+            aux_fast_tokenizer_path="ckpts/openpi-assets/fast"
+        ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
             repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",

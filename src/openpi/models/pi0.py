@@ -67,6 +67,8 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.aux_loss_weight = config.aux_loss_weight
+        self.aux_ce_chunk_size = config.aux_ce_chunk_size
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -104,8 +106,12 @@ class Pi0(_model.BaseModel):
 
     @at.typecheck
     def embed_prefix(
-        self, obs: _model.Observation
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+        self, obs: _model.Observation, *, include_auxiliary: bool = False
+    ) -> tuple[
+        at.Float[at.Array, "b s emb"],
+        at.Bool[at.Array, "b s"],
+        at.Bool[at.Array, " s"] | at.Bool[at.Array, "b s"],
+    ]:
         input_mask = []
         ar_mask = []
         tokens = []
@@ -131,6 +137,15 @@ class Pi0(_model.BaseModel):
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
+
+        if include_auxiliary and obs.tokenized_auxiliary is not None:
+            assert obs.tokenized_auxiliary_mask is not None
+            tokenized_auxiliary = self.PaliGemma.llm(obs.tokenized_auxiliary, method="embed")
+            tokens.append(tokenized_auxiliary)
+            input_mask.append(obs.tokenized_auxiliary_mask)
+            # Auxiliary labels are teacher-forced autoregressive targets.
+            ar_mask = einops.repeat(jnp.asarray(ar_mask), "s -> b s", b=tokenized_auxiliary.shape[0])
+            ar_mask = jnp.concatenate([ar_mask, obs.tokenized_auxiliary_mask], axis=1)
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
@@ -185,12 +200,55 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
-    @override
-    def compute_loss(
+    def _compute_auxiliary_loss(self, prefix_out, observation: _model.Observation):
+        assert observation.tokenized_auxiliary is not None
+        assert observation.tokenized_auxiliary_mask is not None
+        auxiliary_len = observation.tokenized_auxiliary.shape[1]
+        prompt_mask = observation.tokenized_prompt_mask
+        assert prompt_mask is not None
+        prompt_start = prefix_out.shape[1] - auxiliary_len - prompt_mask.shape[1]
+        prompt_hidden = prefix_out[:, prompt_start:-auxiliary_len]
+        last_prompt_index = jnp.sum(prompt_mask, axis=-1) - 1
+        last_prompt_hidden = jnp.take_along_axis(prompt_hidden, last_prompt_index[:, None, None], axis=1)
+        auxiliary_hidden = jnp.concatenate([last_prompt_hidden, prefix_out[:, -auxiliary_len:-1]], axis=1)
+        auxiliary_targets = observation.tokenized_auxiliary
+        auxiliary_mask = observation.tokenized_auxiliary_mask
+
+        chunk_size = self.aux_ce_chunk_size
+        padded_len = ((auxiliary_hidden.shape[1] + chunk_size - 1) // chunk_size) * chunk_size
+        pad_len = padded_len - auxiliary_hidden.shape[1]
+        auxiliary_hidden = jnp.pad(auxiliary_hidden, ((0, 0), (0, pad_len), (0, 0)))
+        auxiliary_targets = jnp.pad(auxiliary_targets, ((0, 0), (0, pad_len)))
+        auxiliary_mask = jnp.pad(auxiliary_mask, ((0, 0), (0, pad_len)))
+
+        batch_size, _, hidden_dim = auxiliary_hidden.shape
+        auxiliary_hidden = auxiliary_hidden.reshape(batch_size, -1, chunk_size, hidden_dim).swapaxes(0, 1)
+        auxiliary_targets = auxiliary_targets.reshape(batch_size, -1, chunk_size).swapaxes(0, 1)
+        auxiliary_mask = auxiliary_mask.reshape(batch_size, -1, chunk_size).swapaxes(0, 1)
+
+        def accumulate_loss(total_loss, chunk):
+            hidden, targets, loss_mask = chunk
+            logits = self.PaliGemma.llm(hidden, method="decode")
+            target_logits = jnp.take_along_axis(logits, targets[..., None], axis=-1)[..., 0]
+            token_loss = jax.nn.logsumexp(logits.astype(jnp.float32), axis=-1) - target_logits.astype(
+                jnp.float32
+            )
+            return total_loss + jnp.sum(jnp.where(loss_mask, token_loss, 0.0), axis=-1), None
+
+        total_loss, _ = jax.lax.scan(
+            accumulate_loss,
+            jnp.zeros((batch_size,), dtype=jnp.float32),
+            (auxiliary_hidden, auxiliary_targets, auxiliary_mask),
+        )
+        token_count = jnp.sum(observation.tokenized_auxiliary_mask, axis=-1)
+        return total_loss / jnp.clip(token_count, 1)
+
+    def _compute_loss_with_metrics(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
-    ) -> at.Float[at.Array, "*b ah"]:
+    ):
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        use_auxiliary = self.aux_loss_weight > 0 and observation.tokenized_auxiliary is not None
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
@@ -199,19 +257,48 @@ class Pi0(_model.BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # one big forward pass of prefix + suffix at once
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        # One big forward pass of prefix + suffix at once.
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation, include_auxiliary=use_auxiliary)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
         input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+        if prefix_ar_mask.ndim == 2:
+            suffix_ar_mask = jnp.broadcast_to(suffix_ar_mask, (prefix_ar_mask.shape[0], suffix_ar_mask.shape[0]))
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
+        else:
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
+        if use_auxiliary:
+            auxiliary_len = observation.tokenized_auxiliary.shape[1]
+            auxiliary_start = prefix_mask.shape[1] - auxiliary_len
+            # The action expert must not read labels that are unavailable during inference.
+            attn_mask = attn_mask.at[:, prefix_mask.shape[1] :, auxiliary_start : prefix_mask.shape[1]].set(False)
         positions = jnp.cumsum(input_mask, axis=1) - 1
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        action_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        auxiliary_loss = jnp.zeros(action_loss.shape[:-1], dtype=jnp.float32)
+        if use_auxiliary:
+            auxiliary_loss = self._compute_auxiliary_loss(prefix_out, observation)
+        total_loss = action_loss + self.aux_loss_weight * auxiliary_loss[..., None]
+        return total_loss, {
+            "action_loss": jnp.mean(action_loss),
+            "auxiliary_loss": jnp.mean(auxiliary_loss),
+        }
+
+    @override
+    def compute_loss(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+    ) -> at.Float[at.Array, "*b ah"]:
+        return self._compute_loss_with_metrics(rng, observation, actions, train=train)[0]
+
+    @override
+    def compute_loss_with_metrics(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+    ):
+        return self._compute_loss_with_metrics(rng, observation, actions, train=train)
 
     @override
     def sample_actions(

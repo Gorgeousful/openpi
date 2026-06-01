@@ -95,10 +95,19 @@ class RepackTransform(DataTransformFn):
     """
 
     structure: at.PyTree[str]
+    optional_structure: at.PyTree[str] | None = None
 
     def __call__(self, data: DataDict) -> DataDict:
         flat_item = flatten_dict(data)
-        return jax.tree.map(lambda k: flat_item[k], self.structure)
+        result = jax.tree.map(lambda k: flat_item[k], self.structure)
+        if self.optional_structure is None:
+            return result
+
+        flat_result = flatten_dict(result)
+        for new_key, old_key in flatten_dict(self.optional_structure).items():
+            if old_key in flat_item:
+                flat_result[new_key] = flat_item[old_key]
+        return unflatten_dict(flat_result)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -264,6 +273,31 @@ class TokenizePrompt(DataTransformFn):
 
         tokens, token_masks = self.tokenizer.tokenize(prompt, state)
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
+
+
+@dataclasses.dataclass(frozen=True)
+class TokenizeAuxiliaryTargets(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    enabled: bool = False
+    fast_action_tokenizer: _tokenizer.FASTTokenizer | None = None
+
+    def __call__(self, data: DataDict) -> DataDict:
+        auxiliary_targets = {key: data.pop(key, None) for key in ("grounding", "subtask", "phase")}
+        if not self.enabled:
+            return data
+
+        fast_action_tokens = None
+        if self.fast_action_tokenizer is not None and (actions := data.get("actions")) is not None:
+            fast_action_tokens = self.fast_action_tokenizer.tokenize_actions(actions)
+        tokens, token_masks = self.tokenizer.tokenize_auxiliary(
+            auxiliary_targets,
+            fast_action_tokens=fast_action_tokens,
+        )
+        return {
+            **data,
+            "tokenized_auxiliary": tokens,
+            "tokenized_auxiliary_mask": token_masks,
+        }
 
 
 @dataclasses.dataclass(frozen=True)

@@ -16,6 +16,16 @@ def test_repack_transform():
     assert transform(item) == {"a": {"b": 1}, "d": 2}
 
 
+def test_repack_transform_with_missing_optional_input():
+    transform = _transforms.RepackTransform(
+        structure={"required": "required"},
+        optional_structure={"optional": "optional"},
+    )
+
+    assert transform({"required": 1}) == {"required": 1}
+    assert transform({"required": 1, "optional": 2}) == {"required": 1, "optional": 2}
+
+
 def test_delta_actions():
     item = {"state": np.array([1, 2, 3]), "actions": np.array([[3, 4, 5], [5, 6, 7]])}
 
@@ -83,6 +93,36 @@ def test_tokenize_no_prompt():
 
     with pytest.raises(ValueError, match="Prompt is required"):
         transform({})
+
+
+def test_tokenize_auxiliary_targets_with_fast_actions():
+    class FakeFASTTokenizer:
+        def tokenize_actions(self, actions):
+            assert np.array_equal(actions, np.array([[1.0, 2.0]]))
+            return np.array([256110, 256425])
+
+    transform = _transforms.TokenizeAuxiliaryTargets(
+        _tokenizer.PaligemmaTokenizer(aux_max_len=16),
+        enabled=True,
+        fast_action_tokenizer=FakeFASTTokenizer(),
+    )
+    actions = np.array([[1.0, 2.0]])
+
+    data = transform({"actions": actions})
+
+    assert data["actions"] is actions
+    assert np.any(data["tokenized_auxiliary_mask"])
+
+
+def test_tokenize_auxiliary_targets_without_actions():
+    transform = _transforms.TokenizeAuxiliaryTargets(
+        _tokenizer.PaligemmaTokenizer(aux_max_len=16),
+        enabled=True,
+    )
+
+    data = transform({})
+
+    assert not np.any(data["tokenized_auxiliary_mask"])
 
 
 def test_transform_dict():
