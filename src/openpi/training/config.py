@@ -830,7 +830,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=64, # 256
+        batch_size=256,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -846,7 +846,13 @@ _CONFIGS = [
     #: expr
     TrainConfig(
         name="pi05_libero_low_mem_finetune",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant="gemma_2b_lora", dtype="bfloat16"),
+        model=pi0_config.Pi0Config(
+            pi05=True, 
+            action_horizon=10, 
+            discrete_state_input=True, 
+            paligemma_variant="gemma_2b_lora", 
+            dtype="bfloat16"
+        ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
             repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
@@ -856,10 +862,10 @@ _CONFIGS = [
         batch_size=64,
         gradient_accumulation_steps=1,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=5_000, # 10_000
-            peak_lr=5e-5,
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
             decay_steps=1_000_000,
-            decay_lr=5e-5,
+            decay_lr=2.5e-5,
         ),
         save_interval=5_000,
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),

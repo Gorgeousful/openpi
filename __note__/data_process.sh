@@ -22,6 +22,13 @@ ResizeImages
   resize_with_pad 到 224 x 224
 TokenizePrompt
   prompt 转 token
+TokenizeAuxiliaryTargets
+  从 grounding/subtask/phase 构造辅助文本 token
+  若 aux_fast_action=True 且有 actions，将 action chunk 转为 FAST token，并映射到 PaliGemma <loc...> token id
+  追加为 Action: <FAST tokens>|<eos>
+  输出 tokenized_auxiliary 和 tokenized_auxiliary_mask
+  tokenized_auxiliary_mask=True 的有效 token 参与 aux CE loss，padding 不参与
+  训练时 action expert 不能读取 aux label；推理默认不输入 aux
 PadStatesAndActions
   state 和 actions 最后一维补齐到 32
 ---

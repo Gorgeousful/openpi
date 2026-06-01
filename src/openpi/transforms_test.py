@@ -26,6 +26,23 @@ def test_repack_transform_with_missing_optional_input():
     assert transform({"required": 1, "optional": 2}) == {"required": 1, "optional": 2}
 
 
+def test_repack_transform_with_slash_keys_and_optional_input():
+    transform = _transforms.RepackTransform(
+        structure={
+            "observation/image": "observation.images.image",
+            "actions": "action",
+        },
+        optional_structure={"grounding": "grounding"},
+    )
+    item = {
+        "observation": {"images": {"image": 1}},
+        "action": 2,
+        "grounding": 3,
+    }
+
+    assert transform(item) == {"observation/image": 1, "actions": 2, "grounding": 3}
+
+
 def test_delta_actions():
     item = {"state": np.array([1, 2, 3]), "actions": np.array([[3, 4, 5], [5, 6, 7]])}
 

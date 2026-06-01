@@ -103,11 +103,22 @@ class RepackTransform(DataTransformFn):
         if self.optional_structure is None:
             return result
 
-        flat_result = flatten_dict(result)
-        for new_key, old_key in flatten_dict(self.optional_structure).items():
-            if old_key in flat_item:
-                flat_result[new_key] = flat_item[old_key]
-        return unflatten_dict(flat_result)
+        return _add_optional_fields(result, self.optional_structure, flat_item)
+
+
+def _add_optional_fields(result: DataDict, optional_structure: at.PyTree[str], flat_item: dict) -> DataDict:
+    if not isinstance(optional_structure, Mapping):
+        return result
+
+    result = dict(result)
+    for new_key, old_key in optional_structure.items():
+        if isinstance(old_key, Mapping):
+            nested_result = _add_optional_fields(result.get(new_key, {}), old_key, flat_item)
+            if nested_result:
+                result[new_key] = nested_result
+        elif old_key in flat_item:
+            result[new_key] = flat_item[old_key]
+    return result
 
 
 @dataclasses.dataclass(frozen=True)
