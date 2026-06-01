@@ -239,12 +239,14 @@ def main(config: _config.TrainConfig):
 
     accumulation_steps = config.gradient_accumulation_steps
     effective_batch_size = config.batch_size * accumulation_steps
+    logging.info("----- Gradient accumulation -----")
     logging.info(
-        "Gradient accumulation: micro_batch_size=%d, accumulation_steps=%d, effective_batch_size=%d",
+        "micro_batch_size=%d, accumulation_steps=%d, effective_batch_size=%d",
         config.batch_size,
         accumulation_steps,
         effective_batch_size,
     )
+    logging.info("---------------------------------")
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 

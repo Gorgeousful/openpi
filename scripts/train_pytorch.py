@@ -372,11 +372,13 @@ def train_loop(config: _config.TrainConfig):
     world_size = torch.distributed.get_world_size() if use_ddp else 1
     per_device_batch_size = config.batch_size // world_size
     effective_batch_size = config.batch_size * config.gradient_accumulation_steps
+    logging.info("----- Gradient accumulation -----")
     logging.info(
-        f"Using batch size per GPU: {per_device_batch_size} "
-        f"(micro global batch size: {config.batch_size}, accumulation steps: {config.gradient_accumulation_steps}, "
-        f"effective global batch size: {effective_batch_size})"
+        f"per_gpu_micro_batch_size={per_device_batch_size}, "
+        f"micro_global_batch_size={config.batch_size}, accumulation_steps={config.gradient_accumulation_steps}, "
+        f"effective_global_batch_size={effective_batch_size}"
     )
+    logging.info("---------------------------------")
 
     # Pass the original batch size to data loader - it will handle DDP splitting internally
     loader, data_config = build_datasets(config)
