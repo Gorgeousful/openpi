@@ -154,11 +154,16 @@ class Embedder(nn.Module):
         return jnp.dot(x, self.input_embedding_table.T)
 
 
+def _detach_prefix(x, prefix_len: int):
+    return jnp.concatenate([jax.lax.stop_gradient(x[:, :prefix_len]), x[:, prefix_len:]], axis=1)
+
+
 @at.typecheck
 class Attention(nn.Module):
     """Attention module."""
 
     configs: Sequence[Config]
+    detach_vlm_for_flow: bool = False
 
     @nn.compact
     def __call__(self, xs, positions, attn_mask, kv_cache):
@@ -213,8 +218,29 @@ class Attention(nn.Module):
             k = jnp.concatenate([cache_k, k], axis=1)
             v = jnp.concatenate([cache_v, v], axis=1)
 
+        detach_prefix_for_suffix = (
+            self.detach_vlm_for_flow
+            and kv_cache is None
+            and len(xs) == 2
+            and xs[0] is not None
+            and xs[1] is not None
+        )
+        prefix_len = xs[0].shape[1] if detach_prefix_for_suffix else 0
+
         q = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.configs[0].num_kv_heads)
-        logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k, preferred_element_type=jnp.float32)
+        if detach_prefix_for_suffix:
+            prefix_logits = jnp.einsum(
+                "BTKGH,BSKH->BKGTS", q[:, :prefix_len], k, preferred_element_type=jnp.float32
+            )
+            suffix_logits = jnp.einsum(
+                "BTKGH,BSKH->BKGTS",
+                q[:, prefix_len:],
+                _detach_prefix(k, prefix_len),
+                preferred_element_type=jnp.float32,
+            )
+            logits = jnp.concatenate([prefix_logits, suffix_logits], axis=-2)
+        else:
+            logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k, preferred_element_type=jnp.float32)
 
         if attn_mask.shape != (q.shape[0], 1, q.shape[1], k.shape[1]):
             raise ValueError(
@@ -227,7 +253,14 @@ class Attention(nn.Module):
 
         probs = jax.nn.softmax(masked_logits, axis=-1).astype(dtype)
 
-        encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
+        if detach_prefix_for_suffix:
+            prefix_encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs[:, :, :, :prefix_len], v)
+            suffix_encoded = jnp.einsum(
+                "BKGTS,BSKH->BTKGH", probs[:, :, :, prefix_len:], _detach_prefix(v, prefix_len)
+            )
+            encoded = jnp.concatenate([prefix_encoded, suffix_encoded], axis=1)
+        else:
+            encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
         encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
 
         out = []
@@ -285,6 +318,7 @@ class Block(nn.Module):
     """Transformer block."""
 
     configs: tuple[Config, ...]
+    detach_vlm_for_flow: bool = False
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
@@ -294,7 +328,7 @@ class Block(nn.Module):
         xs = sharding.activation_sharding_constraint(xs)
         drop = nn.Dropout(self.dropout, self.dropout_bdims) if self.dropout else lambda x, _: x
 
-        attn = Attention(configs=self.configs, name="attn")
+        attn = Attention(configs=self.configs, detach_vlm_for_flow=self.detach_vlm_for_flow, name="attn")
 
         pre_attn = []
         gates = []
@@ -346,6 +380,7 @@ class Module(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
     adarms: bool = False
+    detach_vlm_for_flow: bool = False
 
     def setup(self):
         # all experts must have the same depth
@@ -378,6 +413,7 @@ class Module(nn.Module):
             configs=self.configs,
             dropout=self.dropout,
             dropout_bdims=self.dropout_bdims,
+            detach_vlm_for_flow=self.detach_vlm_for_flow,
         )
         self.final_norms = [RMSNorm(name=_name("final_norm", i)) for i in range(len(self.configs))]
 

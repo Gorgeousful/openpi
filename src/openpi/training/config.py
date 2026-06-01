@@ -880,7 +880,8 @@ _CONFIGS = [
             aux_max_token_len=200,
             aux_ce_chunk_size=16,
             aux_fast_action=True,
-            aux_fast_tokenizer_path="ckpts/openpi-assets/fast"
+            aux_fast_tokenizer_path="ckpts/openpi-assets/fast",
+            detach_vlm_for_flow=False,
         ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
