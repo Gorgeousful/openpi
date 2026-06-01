@@ -13,17 +13,27 @@ pi05_libero \
 --ema-decay None \
 --overwrite
 
-# 实测单卡32，显存占用约33G XLA_PYTHON_CLIENT_PREALLOCATE=false 
+
+
+
+
+# lora微调实测单卡32，显存占用约33G XLA_PYTHON_CLIENT_PREALLOCATE=false 
+#: expr 1
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
-WANDB_MODE=disabled \
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-CUDA_VISIBLE_DEVICES=3,4 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=2,3 \
 python scripts/train.py \
 pi05_libero_low_mem_finetune \
---exp-name=pi05_libero_low_mem_finetune \
---batch_size 64 \
---gradient_accumulation_steps 1 \
---ema-decay None \
+--exp-name=pi05_libero_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
 
+#: expr 2 from warmup 10k to 5k
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=1,4 \
+python scripts/train.py \
+pi05_libero_low_mem_finetune \
+--exp-name=pi05_libero_low_mem_finetune-$(date +%m%d%H%M) \
+--overwrite

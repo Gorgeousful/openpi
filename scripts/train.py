@@ -3,6 +3,7 @@ import functools
 import logging
 import platform
 from typing import Any
+import os
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -198,6 +199,7 @@ def apply_grads_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        "learning_rate": config.lr_schedule.create()(state.step),
     }
     return new_state, info
 
@@ -229,6 +231,12 @@ def _skip_resume_batches(data_iter, data_loader, num_batches: int):
 
 
 def main(config: _config.TrainConfig):
+    if os.environ.get("DEBUG", "0") == "1":
+        import debugpy
+        debugpy.listen(("0.0.0.0", 10092))
+        print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+        debugpy.wait_for_client()
+
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
@@ -239,7 +247,7 @@ def main(config: _config.TrainConfig):
 
     accumulation_steps = config.gradient_accumulation_steps
     effective_batch_size = config.batch_size * accumulation_steps
-    logging.info("----- Gradient accumulation -----")
+    logging.info("---------------------------------")
     logging.info(
         "micro_batch_size=%d, accumulation_steps=%d, effective_batch_size=%d",
         config.batch_size,

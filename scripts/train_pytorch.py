@@ -372,7 +372,7 @@ def train_loop(config: _config.TrainConfig):
     world_size = torch.distributed.get_world_size() if use_ddp else 1
     per_device_batch_size = config.batch_size // world_size
     effective_batch_size = config.batch_size * config.gradient_accumulation_steps
-    logging.info("----- Gradient accumulation -----")
+    logging.info("---------------------------------")
     logging.info(
         f"per_gpu_micro_batch_size={per_device_batch_size}, "
         f"micro_global_batch_size={config.batch_size}, accumulation_steps={config.gradient_accumulation_steps}, "
@@ -674,6 +674,11 @@ def train_loop(config: _config.TrainConfig):
 
 
 def main():
+    if os.environ.get("DEBUG", "0") == "1":
+        import debugpy
+        debugpy.listen(("0.0.0.0", 10092))
+        print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+        debugpy.wait_for_client()
     init_logging()
     config = _config.cli()
     train_loop(config)
