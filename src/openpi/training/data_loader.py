@@ -228,6 +228,7 @@ def create_data_loader(
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
     framework: Literal["jax", "pytorch"] = "jax",
+    resume_skip_batches: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -238,6 +239,7 @@ def create_data_loader(
         num_batches: Determines the number of batches to return.
         skip_norm_stats: Whether to skip data normalization.
         framework: The framework to use ("jax" or "pytorch").
+        resume_skip_batches: Number of local microbatches to skip for JAX resume.
     """
     data_config = config.data.create(config.assets_dirs, config.model)
     logging.info(f"data_config: {data_config}")
@@ -252,6 +254,7 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
             framework=framework,
+            resume_skip_batches=resume_skip_batches,
         )
     return create_torch_data_loader(
         data_config,
@@ -265,6 +268,7 @@ def create_data_loader(
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
         framework=framework,
+        resume_skip_batches=resume_skip_batches,
     )
 
 
@@ -281,6 +285,7 @@ def create_torch_data_loader(
     num_workers: int = 0,
     seed: int = 0,
     framework: str = "jax",
+    resume_skip_batches: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -298,6 +303,7 @@ def create_torch_data_loader(
         num_workers: The number of worker processes to use. If zero, the data loader will
             execute in the main process.
         seed: The seed to use for shuffling the data.
+        resume_skip_batches: Number of local microbatches to skip for JAX resume.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
@@ -320,6 +326,19 @@ def create_torch_data_loader(
             local_batch_size = batch_size
     else:
         local_batch_size = batch_size // jax.process_count()
+
+    if framework == "jax" and resume_skip_batches > 0:
+        if not shuffle:
+            raise ValueError("Fast resume skipping is only implemented for shuffled JAX torch datasets.")
+        if sampler is not None:
+            raise ValueError("Fast resume skipping cannot be combined with an explicit sampler.")
+        sampler = _FastForwardRandomSampler(
+            dataset,
+            local_batch_size=local_batch_size,
+            skip_batches=resume_skip_batches,
+            seed=seed,
+        )
+        shuffle = False
 
     logging.info(f"local_batch_size: {local_batch_size}")
     data_loader = TorchDataLoader(
@@ -347,6 +366,7 @@ def create_rlds_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     framework: str = "jax",
+    resume_skip_batches: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
@@ -364,6 +384,8 @@ def create_rlds_data_loader(
             number of batches in the dataset, the data loader will loop over the dataset.
             If not provided, will iterate over the dataset indefinitely.
     """
+    if resume_skip_batches > 0:
+        raise NotImplementedError("Fast resume skipping is only implemented for JAX torch datasets.")
     if framework == "pytorch":
         raise NotImplementedError("PyTorch RLDS data loader is not supported yet")
     dataset = create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=shuffle)
@@ -376,6 +398,49 @@ def create_rlds_data_loader(
     )
 
     return DataLoaderImpl(data_config, data_loader)
+
+
+class _FastForwardRandomSampler(torch.utils.data.Sampler):
+    """Random sampler that skips local microbatches without loading samples."""
+
+    def __init__(self, dataset: Dataset, *, local_batch_size: int, skip_batches: int, seed: int):
+        if skip_batches < 0:
+            raise ValueError(f"skip_batches must be non-negative, got {skip_batches}.")
+        if local_batch_size <= 0:
+            raise ValueError(f"local_batch_size must be positive, got {local_batch_size}.")
+
+        dataset_size = len(dataset)
+        batches_per_epoch = dataset_size // local_batch_size
+        if batches_per_epoch <= 0:
+            raise ValueError(
+                f"Local batch size ({local_batch_size}) is larger than the dataset size ({dataset_size})."
+            )
+
+        skip_epochs, batch_offset = divmod(skip_batches, batches_per_epoch)
+        self._dataset = dataset
+        self._generator = torch.Generator()
+        self._generator.manual_seed(seed)
+        self._start_offset = batch_offset * local_batch_size
+
+        for _ in range(skip_epochs):
+            torch.randperm(dataset_size, generator=self._generator)
+
+        logging.info(
+            "Fast-forwarding JAX data sampler by %d microbatches (%d full epochs + %d microbatches, %d samples into current epoch).",
+            skip_batches,
+            skip_epochs,
+            batch_offset,
+            self._start_offset,
+        )
+
+    def __iter__(self):
+        permutation = torch.randperm(len(self._dataset), generator=self._generator).tolist()
+        start_offset = self._start_offset
+        self._start_offset = 0
+        yield from permutation[start_offset:]
+
+    def __len__(self) -> int:
+        return len(self._dataset)
 
 
 class TorchDataLoader:

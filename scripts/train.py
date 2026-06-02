@@ -220,20 +220,6 @@ def train_step(
     return apply_grads_step(config, state, grads, loss, metrics)
 
 
-def _skip_resume_batches(data_iter, data_loader, num_batches: int):
-    if num_batches <= 0:
-        return data_iter
-
-    logging.info("Skipping %d microbatches to restore resume data position.", num_batches)
-    for _ in tqdm.tqdm(range(num_batches), desc="Skipping resume data", dynamic_ncols=True):
-        try:
-            next(data_iter)
-        except StopIteration:
-            data_iter = iter(data_loader)
-            next(data_iter)
-    return data_iter
-
-
 def main(config: _config.TrainConfig):
     if os.environ.get("DEBUG", "0") == "1":
         import debugpy
@@ -277,25 +263,24 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
-    data_loader = _data_loader.create_data_loader(
-        config,
-        sharding=data_sharding,
-        shuffle=True,
-    )
-    data_iter = iter(data_loader)
-
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
     if resuming:
         train_state = _checkpoints.restore_state(
-            checkpoint_manager, train_state, data_loader, state_sharding=train_state_sharding
+            checkpoint_manager, train_state, None, state_sharding=train_state_sharding
         )
 
     start_step = int(train_state.step)
-    if resuming and start_step < config.num_train_steps:
-        data_iter = _skip_resume_batches(data_iter, data_loader, start_step * accumulation_steps)
+    resume_skip_batches = start_step * accumulation_steps if resuming and start_step < config.num_train_steps else 0
+    data_loader = _data_loader.create_data_loader(
+        config,
+        sharding=data_sharding,
+        shuffle=True,
+        resume_skip_batches=resume_skip_batches,
+    )
+    data_iter = iter(data_loader)
 
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
