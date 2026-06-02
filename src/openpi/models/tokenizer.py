@@ -58,7 +58,7 @@ class PaligemmaTokenizer:
         self, auxiliary_targets: dict[str, object], *, fast_action_tokens: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         lines = []
-        for key, title in (("grounding", "Grounding"), ("subtask", "Subtask"), ("phase", "Phase")):
+        for key, title in (("grounding", "Grounding"), ("subtask", "Subtask"), ("focus", "Focus"), ("phase", "Phase")):
             value = auxiliary_targets.get(key)
             if value is None:
                 continue

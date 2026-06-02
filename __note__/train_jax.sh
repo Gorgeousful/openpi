@@ -39,7 +39,6 @@ python scripts/train.py \
 pi05_libero_low_mem_finetune \
 --exp-name=pi05_libero_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
-
 #: expr 2 5k warmup + 5e-5 lr
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
@@ -69,7 +68,6 @@ python scripts/train.py \
 pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
-
 #: expr 4 1k warmup + 2.5e-5 lr + discrete state + aux(include fast) + detach + raw pretrain weight
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
@@ -79,5 +77,4 @@ timeout -k 1m 6h \
 python scripts/train.py \
 pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
---save_interval 1000 \
 --overwrite

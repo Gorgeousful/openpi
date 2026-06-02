@@ -293,7 +293,7 @@ class TokenizeAuxiliaryTargets(DataTransformFn):
     fast_action_tokenizer: _tokenizer.FASTTokenizer | None = None
 
     def __call__(self, data: DataDict) -> DataDict:
-        auxiliary_targets = {key: data.pop(key, None) for key in ("grounding", "subtask", "phase")}
+        auxiliary_targets = {key: data.pop(key, None) for key in ("grounding", "subtask", "focus", "phase")}
         if not self.enabled:
             return data
 

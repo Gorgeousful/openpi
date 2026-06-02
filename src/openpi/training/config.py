@@ -403,6 +403,7 @@ class LeRobotLiberoCustomDataConfig(DataConfigFactory):
                     optional_structure={
                         "grounding": "grounding",
                         "subtask": "subtask",
+                        "focus": "focus",
                         "phase": "phase",
                     },
                 )
@@ -869,7 +870,6 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=2.5e-5,
         ),
-        save_interval=5_000,
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=None,
         weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
@@ -906,7 +906,6 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=2.5e-5,
         ),
-        save_interval=5_000,
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=None,
         # weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),

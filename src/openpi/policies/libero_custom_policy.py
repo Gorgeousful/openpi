@@ -63,6 +63,18 @@ def _format_grounding_with_loc_tokens(grounding, *, image_height: int, image_wid
     return "; ".join(formatted_items)
 
 
+def _strip_wrapping_brackets(value) -> str:
+    """Removes one pair of wrapping [] or () from a string value."""
+    if not isinstance(value, str):
+        value = value.item() if np.asarray(value).ndim == 0 else str(value)
+    value = str(value).strip()
+    if len(value) >= 2 and value[0] in "[(" and value[-1] in "[])":
+        matching = {"[": "]", "(": ")"}
+        if matching[value[0]] == value[-1]:
+            return value[1:-1].strip()
+    return value
+
+
 @dataclasses.dataclass(frozen=True)
 class LiberoCustomInputs(transforms.DataTransformFn):
     """
@@ -126,6 +138,9 @@ class LiberoCustomInputs(transforms.DataTransformFn):
 
         if "subtask" in data:
             inputs["subtask"] = data["subtask"]
+
+        if "focus" in data:
+            inputs["focus"] = _strip_wrapping_brackets(data["focus"])
 
         if "phase" in data:
             inputs["phase"] = data["phase"]
