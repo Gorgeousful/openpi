@@ -37,7 +37,9 @@ class PaligemmaTokenizer:
         else:
             # This is the Pi0 format, where the state is part of the continuous action expert input.
             # tokenize "\n" separately as the "start of answer" token
-            tokens = self._tokenizer.encode(cleaned_text, add_bos=True) + self._tokenizer.encode("\n")
+            # full_prompt = cleaned_text
+            full_prompt = f"Task: {cleaned_text}\n"
+            tokens = self._tokenizer.encode(full_prompt, add_bos=True) + self._tokenizer.encode("\n")
         tokens_len = len(tokens)
         if tokens_len < self._max_len:
             padding = [False] * (self._max_len - tokens_len)
