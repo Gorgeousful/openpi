@@ -12,9 +12,10 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48, aux_max_len: int = 200):
+    def __init__(self, max_len: int = 48, aux_max_len: int = 200, state_as_loc_tokens: bool = False):
         self._max_len = max_len
         self._aux_max_len = aux_max_len
+        self._state_as_loc_tokens = state_as_loc_tokens
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -25,7 +26,11 @@ class PaligemmaTokenizer:
         if state is not None:
             # This is the Pi05 format, where the state is part of the discrete language input.
             discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-            state_str = " ".join(map(str, discretized_state))
+            discretized_state = np.clip(discretized_state, 0, 255)
+            if self._state_as_loc_tokens:
+                state_str = " ".join(f"<loc{value:04d}>" for value in discretized_state)
+            else:
+                state_str = " ".join(map(str, discretized_state))
             # full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
             full_prompt = f"Task: {cleaned_text}\nState: {state_str}\n"
             tokens = self._tokenizer.encode(full_prompt, add_bos=True)

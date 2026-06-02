@@ -32,6 +32,7 @@ class Pi0Config(_model.BaseModelConfig):
     pi05: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
+    state_as_loc_tokens: bool = False
 
     # Optional training-only language supervision for grounding, subtask, and phase labels.
     aux_loss_weight: float = 0.0

@@ -116,7 +116,7 @@ class ModelTransformFactory(GroupFactory):
             case _model.ModelType.PI0:
                 assert isinstance(model_config, pi0_config.Pi0Config)
                 tokenizer = _tokenizer.PaligemmaTokenizer(
-                    model_config.max_token_len, model_config.aux_max_token_len
+                    model_config.max_token_len, model_config.aux_max_token_len, model_config.state_as_loc_tokens
                 )
                 fast_action_tokenizer = (
                     _tokenizer.FASTTokenizer(fast_tokenizer_path=model_config.aux_fast_tokenizer_path)
@@ -139,7 +139,7 @@ class ModelTransformFactory(GroupFactory):
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
                 tokenizer = _tokenizer.PaligemmaTokenizer(
-                    model_config.max_token_len, model_config.aux_max_token_len
+                    model_config.max_token_len, model_config.aux_max_token_len, model_config.state_as_loc_tokens
                 )
                 fast_action_tokenizer = (
                     _tokenizer.FASTTokenizer(fast_tokenizer_path=model_config.aux_fast_tokenizer_path)
@@ -188,6 +188,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
 
+#: ====================================================================
 
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
@@ -537,6 +538,7 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+#: ====================================================================
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -879,15 +881,16 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_horizon=10,
-            discrete_state_input=False,
+            discrete_state_input=True,
             paligemma_variant="gemma_2b_lora",
             dtype="bfloat16",
-            aux_loss_weight=0.1,
+            aux_loss_weight=1.0,
             aux_max_token_len=200,
             aux_ce_chunk_size=16,
             aux_fast_action=True,
             aux_fast_tokenizer_path="ckpts/openpi-assets/fast",
-            detach_vlm_for_flow=False,
+            detach_vlm_for_flow=True,
+            state_as_loc_tokens=True,
         ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
@@ -898,14 +901,16 @@ _CONFIGS = [
         batch_size=64, # 256
         gradient_accumulation_steps=1,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000,
-            peak_lr=5e-5,
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
             decay_steps=1_000_000,
-            decay_lr=5e-5,
+            decay_lr=2.5e-5,
         ),
+        save_interval=5_000,
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=None,
-        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
+        # weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/paligemma-3b-mix-224-jax/params"),
         pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
         num_train_steps=50_000,
     ),

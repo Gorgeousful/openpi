@@ -29,8 +29,6 @@ pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-test \
 --overwrite
 
-
-
 # lora微调实测单卡32，显存占用约33G XLA_PYTHON_CLIENT_PREALLOCATE=false   --resume
 #: expr 1 10k warmup + 5e-5 lr
 HF_HOME=/data0/luokang/.cache/huggingface \
@@ -60,4 +58,26 @@ CUDA_VISIBLE_DEVICES=1,4 \
 python scripts/train.py \
 pi05_libero_low_mem_finetune \
 --exp-name=pi05_libero_low_mem_finetune-$(date +%m%d%H%M) \
+--overwrite
+
+#: expr 4 1k warmup + 2.5e-5 lr + discrete state + aux(include fast) + detach
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=2,3 \
+python scripts/train.py \
+pi05_libero_custom_low_mem_finetune \
+--exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
+--overwrite
+
+#: expr 4 1k warmup + 2.5e-5 lr + discrete state + aux(include fast) + detach + raw pretrain weight
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=0,6 \
+timeout -k 1m 6h \
+python scripts/train.py \
+pi05_libero_custom_low_mem_finetune \
+--exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
+--save_interval 1000 \
 --overwrite
