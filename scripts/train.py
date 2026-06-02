@@ -289,7 +289,9 @@ def main(config: _config.TrainConfig):
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
     if resuming:
-        train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+        train_state = _checkpoints.restore_state(
+            checkpoint_manager, train_state, data_loader, state_sharding=train_state_sharding
+        )
 
     start_step = int(train_state.step)
     if resuming and start_step < config.num_train_steps:
