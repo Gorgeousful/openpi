@@ -101,22 +101,35 @@ class LiberoCustomInputs(transforms.DataTransformFn):
         base_image = _parse_image(data["observation/image"], horizontal_flip=True)
         wrist_image = _parse_image(data["observation/wrist_image"], horizontal_flip=True)
 
-        # Create inputs dict. Do not change the keys in the dict below.
-        inputs = {
-            "state": data["observation/state"],
-            "image": {
-                "base_0_rgb": base_image,
-                "left_wrist_0_rgb": wrist_image,
-                # Pad any non-existent images with zero-arrays of the appropriate shape.
-                "right_wrist_0_rgb": np.zeros_like(base_image),
-            },
-            "image_mask": {
-                "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
-                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
-                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
-            },
-        }
+        if self.model_type == _model.ModelType.PI0_FAST_THINKING:
+            inputs = {
+                "state": data["observation/state"],
+                "image": {
+                    "base_0_rgb": base_image,
+                    "left_wrist_0_rgb": wrist_image,
+                },
+                "image_mask": {
+                    "base_0_rgb": np.True_,
+                    "left_wrist_0_rgb": np.True_,
+                },
+            }
+        else:
+            # Create inputs dict. Do not change the keys in the dict below.
+            inputs = {
+                "state": data["observation/state"],
+                "image": {
+                    "base_0_rgb": base_image,
+                    "left_wrist_0_rgb": wrist_image,
+                    # Pad any non-existent images with zero-arrays of the appropriate shape.
+                    "right_wrist_0_rgb": np.zeros_like(base_image),
+                },
+                "image_mask": {
+                    "base_0_rgb": np.True_,
+                    "left_wrist_0_rgb": np.True_,
+                    # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
+                    "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+                },
+            }
 
         # Pad actions to the model action dimension. Keep this for your own dataset.
         # Actions are only available during training.
@@ -162,4 +175,7 @@ class LiberoCustomOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Libero, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][:, :7])}
+        outputs = {"actions": np.asarray(data["actions"][:, :7])}
+        if "thinking" in data:
+            outputs["thinking"] = data["thinking"]
+        return outputs

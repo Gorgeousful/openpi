@@ -190,6 +190,173 @@ class FASTTokenizer:
         return self._paligemma_tokenizer.vocab_size() - 1 - self._fast_skip_tokens - tokens
 
 
+class FASTThinkingTokenizer:
+    def __init__(
+        self,
+        max_len: int = 256,
+        fast_tokenizer_path: str = "physical-intelligence/fast",
+        state_as_loc_tokens: bool = False,
+    ):
+        self._max_len = max_len
+        self._state_as_loc_tokens = state_as_loc_tokens
+
+        # Download base PaliGemma tokenizer
+        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        with path.open("rb") as f:
+            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+
+        # Instantiate FAST tokenizer. FAST action ids are mapped below the image/location tokens.
+        self._fast_tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_path, trust_remote_code=True)
+        self._fast_token_start = self._paligemma_tokenizer.piece_to_id("<start_of_image>") - 1
+
+    def tokenize(
+        self,
+        prompt: str,
+        state: np.ndarray,
+        actions: np.ndarray | None,
+        *,
+        grounding: str | None = None,
+        subtask: str | None = None,
+        focus: str | None = None,
+        phase: str | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_text = self._as_text(prompt).lower().strip().replace("_", " ")
+
+        # Convention: state gets discretized into 256 discrete bins (assumed range after normalization: [-1, 1]).
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        discretized_state = np.clip(discretized_state, 0, 255)
+        if self._state_as_loc_tokens:
+            state_str = " ".join(f"<loc{value:04d}>" for value in discretized_state)
+        else:
+            state_str = " ".join(map(str, discretized_state))
+
+        prefix = f"Task: {cleaned_text}\nState: {state_str}\n<unused0>"
+        prefix_tokens = self._paligemma_tokenizer.encode(prefix, add_bos=True)
+
+        if actions is not None:
+            action_tokens_in_pg = self.tokenize_actions(actions)
+            grounding_text = self._as_text(grounding)
+            subtask_text = self._as_text(subtask)
+            focus_text = self._as_text(focus)
+            phase_text = self._as_text(phase)
+            thinking_text = (
+                f"Grounding: {grounding_text}\n"
+                f"Subtask: {subtask_text}\n"
+                f"Focus: {focus_text}\n"
+                f"Phase: {phase_text}\n"
+                "Action: <unused1>"
+            )
+            thinking_tokens = self._paligemma_tokenizer.encode(thinking_text)
+            postfix_tokens = thinking_tokens + action_tokens_in_pg.tolist() + self._paligemma_tokenizer.encode("|", add_eos=True)
+        else:
+            postfix_tokens = []
+
+        # Prefix is bidirectional context. Postfix is teacher-forced autoregressive target and receives loss.
+        tokens = prefix_tokens + postfix_tokens
+        token_mask = [True] * len(tokens)
+        ar_mask = [0] * len(prefix_tokens) + [1] * len(postfix_tokens)
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(postfix_tokens)
+
+        if len(tokens) < self._max_len:
+            padding = [False] * (self._max_len - len(tokens))
+            tokens = tokens + padding
+            token_mask = token_mask + padding
+            ar_mask = ar_mask + padding
+            loss_mask = loss_mask + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            token_mask = token_mask[: self._max_len]
+            ar_mask = ar_mask[: self._max_len]
+            loss_mask = loss_mask[: self._max_len]
+
+        return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
+
+    def tokenize_actions(self, actions: np.ndarray) -> np.ndarray:
+        action_tokens = self._fast_tokenizer(actions[None])[0]
+        return self._act_tokens_to_paligemma_tokens(action_tokens)
+
+    def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
+        tokens = np.asarray(tokens, dtype=np.int32).reshape(-1)
+        start_pattern = self._paligemma_tokenizer.encode("<unused1>")
+        end_pattern = self._paligemma_tokenizer.encode("|", add_eos=False)
+        action_start = self._find_subsequence(tokens, start_pattern)
+        action_end = self._find_subsequence(tokens, end_pattern)
+        if action_start < 0 or action_end < 0 or action_end <= action_start:
+            raise ValueError("Could not find a valid <unused1> ... | action span in generated tokens.")
+
+        action_start += len(start_pattern)
+        action_tokens = self._paligemma_tokens_to_act_tokens(tokens[action_start:action_end])
+        try:
+            return self._fast_tokenizer.decode(
+                [action_tokens.tolist()], time_horizon=action_horizon, action_dim=action_dim
+            )[0]
+        except Exception:
+            logging.exception("Failed to decode FAST thinking action tokens.")
+            return np.zeros((action_horizon, action_dim), dtype=np.float32)
+
+    def extract_thinking(self, tokens: np.ndarray) -> str:
+        tokens = np.asarray(tokens, dtype=np.int32).reshape(-1)
+        start_pattern = self._paligemma_tokenizer.encode("<unused0>")
+        end_pattern = self._paligemma_tokenizer.encode("<unused1>")
+        thinking_start = self._find_subsequence(tokens, start_pattern)
+        thinking_end = self._find_subsequence(tokens, end_pattern)
+        if thinking_start < 0 or thinking_end < 0 or thinking_end <= thinking_start:
+            raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
+
+        thinking_start += len(start_pattern)
+        thinking_tokens = tokens[thinking_start:thinking_end]
+        thinking_tokens = thinking_tokens[thinking_tokens != self._paligemma_tokenizer.pad_id()]
+        if thinking_tokens.size == 0:
+            return ""
+        return self._paligemma_tokenizer.decode(thinking_tokens.tolist()).strip()
+
+    @staticmethod
+    def _find_subsequence(tokens: np.ndarray, pattern: list[int]) -> int:
+        if not pattern or len(tokens) < len(pattern):
+            return -1
+        pattern_array = np.asarray(pattern, dtype=tokens.dtype)
+        for idx in range(len(tokens) - len(pattern_array) + 1):
+            if np.array_equal(tokens[idx : idx + len(pattern_array)], pattern_array):
+                return idx
+        return -1
+
+    def _act_tokens_to_paligemma_tokens(self, tokens: np.ndarray | list[int]) -> np.ndarray:
+        if isinstance(tokens, list):
+            tokens = np.array(tokens)
+        return self._fast_token_start - tokens
+
+    def _paligemma_tokens_to_act_tokens(self, tokens: np.ndarray) -> np.ndarray:
+        vocab_size = self._get_fast_vocab_size()
+        min_token = self._fast_token_start - vocab_size + 1
+        action_tokens_in_pg = tokens[(tokens >= min_token) & (tokens <= self._fast_token_start)]
+        return self._fast_token_start - action_tokens_in_pg
+
+    def _get_fast_vocab_size(self) -> int:
+        vocab_size = getattr(self._fast_tokenizer, "vocab_size", None)
+        if callable(vocab_size):
+            return int(vocab_size())
+        if vocab_size is not None:
+            return int(vocab_size)
+        raise AttributeError("FAST tokenizer does not expose vocab_size")
+
+    @staticmethod
+    def _as_text(value: object | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "item"):
+            return FASTThinkingTokenizer._as_text(value.item())
+        return str(value)
+
+
 ###########################################################################
 ## The tokenizers below are used for RoboArena baseline implementations. ##
 ## They are *not* used for pi0-style models.                             ##

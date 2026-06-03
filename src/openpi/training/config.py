@@ -16,6 +16,7 @@ import tyro
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
+import openpi.models.pi0_fast_thinking as pi0_fast_thinking
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
@@ -182,6 +183,41 @@ class ModelTransformFactory(GroupFactory):
                     outputs=[
                         _transforms.ExtractFASTActions(
                             tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
+                            action_horizon=model_config.action_horizon,
+                            action_dim=model_config.action_dim,
+                        )
+                    ],
+                )
+            case _model.ModelType.PI0_FAST_THINKING:
+                tokenizer_cls = (
+                    _tokenizer.FASTThinkingTokenizer
+                    if model_config.fast_model_tokenizer is None
+                    else model_config.fast_model_tokenizer
+                )
+                tokenizer_kwargs = (
+                    {} if model_config.fast_model_tokenizer_kwargs is None else model_config.fast_model_tokenizer_kwargs
+                )
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeFASTThinkingInputs(
+                            tokenizer_cls(
+                                model_config.max_token_len,
+                                fast_tokenizer_path=model_config.fast_tokenizer_path,
+                                state_as_loc_tokens=model_config.state_as_loc_tokens,
+                                **tokenizer_kwargs,
+                            ),
+                        ),
+                    ],
+                    outputs=[
+                        _transforms.ExtractFASTThinkingActions(
+                            tokenizer_cls(
+                                model_config.max_token_len,
+                                fast_tokenizer_path=model_config.fast_tokenizer_path,
+                                state_as_loc_tokens=model_config.state_as_loc_tokens,
+                                **tokenizer_kwargs,
+                            ),
                             action_horizon=model_config.action_horizon,
                             action_dim=model_config.action_dim,
                         )
@@ -886,12 +922,12 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             dtype="bfloat16",
             state_as_loc_tokens=True,
-            aux_loss_weight=0.1, # 1.0
+            aux_loss_weight=0.05, # 1.0
             aux_max_token_len=200,
             aux_ce_chunk_size=64,
             aux_fast_action=True,
             aux_fast_tokenizer_path="ckpts/openpi-assets/fast",
-            detach_vlm_for_flow=True,
+            detach_vlm_for_flow=False,
         ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
@@ -912,6 +948,39 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
         # weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/paligemma-3b-mix-224-jax/params"),
         pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
+        num_train_steps=50_000,
+    ),
+    #: fast thinking
+    TrainConfig(
+        name="pi0_fast_thinking_libero_custom_low_mem_finetune",
+        model=pi0_fast_thinking.Pi0FASTThinkingConfig(
+            action_dim=7, 
+            action_horizon=10, 
+            max_token_len=200, 
+            paligemma_variant="gemma_2b_lora",
+            dtype="bfloat16",
+            state_as_loc_tokens=False,
+            fast_tokenizer_path="ckpts/openpi-assets/fast",
+        ),
+        freeze_filter=pi0_fast_thinking.Pi0FASTThinkingConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
+        data=LeRobotLiberoCustomDataConfig(
+            repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=64, # 256
+        gradient_accumulation_steps=1,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/paligemma-3b-mix-224-jax/params"),
+        pytorch_weight_path=None,
         num_train_steps=50_000,
     ),
     #
