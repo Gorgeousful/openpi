@@ -287,6 +287,7 @@ class Pi0(_model.BaseModel):
         return total_loss, {
             "action_loss": jnp.mean(action_loss),
             "auxiliary_loss": jnp.mean(auxiliary_loss),
+            "weighted_auxiliary_loss": self.aux_loss_weight * jnp.mean(auxiliary_loss),
         }
 
     @override

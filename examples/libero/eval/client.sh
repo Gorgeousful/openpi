@@ -1,6 +1,6 @@
 # CKPT_DIR=checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408/15000
 # CKPT_DIR=checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06011512/15000
-CKPT_DIR=checkpoints/pi05_libero_custom_low_mem_finetune/pi05_libero_custom_low_mem_finetune-06020633/15000
+CKPT_DIR=checkpoints/pi05_libero_custom_low_mem_finetune/pi05_libero_custom_low_mem_finetune-06020633/17000
 
 TASK_SUITE=libero_10
 RESULT_DIR="$CKPT_DIR/result/$TASK_SUITE"

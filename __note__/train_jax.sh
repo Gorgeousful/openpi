@@ -99,6 +99,16 @@ pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-06020633 \
 --resume
 
+#: 1k warmup + 2.5e-5 lr + special discrete state + aux(include fast) + detach + 0.1 weight
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=1,2,3,4 \
+python scripts/train.py \
+pi05_libero_custom_low_mem_finetune \
+--exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
+--overwrite
+
 
 # ==========================================================================================
 
