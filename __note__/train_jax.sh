@@ -38,8 +38,10 @@ pi05_libero_low_mem_finetune \
 --batch_size 64 \
 --overwrite
 
+# ==========================================================================================
 # lora微调实测单卡32，显存占用约33G; 单卡64, 显存占用约44G  
 # XLA_PYTHON_CLIENT_PREALLOCATE=false   --resume
+
 #: 1k warmup + 2.5e-5 lr + discrete state
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \

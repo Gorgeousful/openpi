@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import json
 import logging
 import math
 import pathlib
@@ -13,6 +14,9 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
+import rich
+from rich.console import Console
+cs = Console()
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -23,10 +27,12 @@ class Args:
     #################################################################################################################
     # Model server parameters
     #################################################################################################################
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
     resize_size: int = 224
     replan_steps: int = 5
+    normalize_gripper: bool = False
+    invert_gripper: bool = False
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -41,11 +47,13 @@ class Args:
     # Utils
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
+    result_out_path: str = "data/libero/results.json"  # Path to save evaluation metrics
 
     seed: int = 7  # Random Seed (for reproducibility)
 
 
 def eval_libero(args: Args) -> None:
+    cs.print(args, markup=False)
     # Set random seed
     np.random.seed(args.seed)
 
@@ -56,6 +64,7 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(args.result_out_path).parent.mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
@@ -74,6 +83,8 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    total_completion = 0.0
+    task_results = []
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -86,6 +97,8 @@ def eval_libero(args: Args) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
+        task_completion = 0.0
+        total_goals = len(_get_goal_states(env))
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
@@ -99,6 +112,7 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            done = False
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
@@ -149,6 +163,11 @@ def eval_libero(args: Args) -> None:
                         action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()
+                    action = _prepare_gripper_action(
+                        action,
+                        normalize_gripper=args.normalize_gripper,
+                        invert_gripper=args.invert_gripper,
+                    )
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
@@ -164,27 +183,67 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+            completed_goals, total_goals = _count_completed_goals(env)
+            completion = float(completed_goals) / float(total_goals) if total_goals else 0.0
+            task_completion += completion
+            total_completion += completion
 
             # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                pathlib.Path(args.video_out_path) / f"task_{task_id:03d}_ep_{episode_idx:03d}_{task_segment}_{suffix}.mp4",
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
 
             # Log current results
+            current_task_sr = float(task_successes) / float(task_episodes)
+            current_task_cr = float(task_completion) / float(task_episodes)
+            current_total_sr = float(total_successes) / float(total_episodes)
+            current_total_cr = float(total_completion) / float(total_episodes)
             logging.info(f"Success: {done}")
-            logging.info(f"# episodes completed so far: {total_episodes}")
-            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            logging.info(f"Completed goals: {completed_goals}/{total_goals}")
+            logging.info(f"Current Task SR: {current_task_sr * 100:.1f}%")
+            logging.info(f"Current Task CR: {current_task_cr * 100:.1f}%")
+            logging.info(f"Total SR: {current_total_sr * 100:.1f}%")
+            logging.info(f"Total CR: {current_total_cr * 100:.1f}%")
 
         # Log final results
-        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        task_success_rate = float(task_successes) / float(task_episodes)
+        task_completion_rate = float(task_completion) / float(task_episodes)
+        total_success_rate = float(total_successes) / float(total_episodes)
+        total_completion_rate = float(total_completion) / float(total_episodes)
+        task_results.append(
+            {
+                "task_id": task_id,
+                "task_desc": task_description,
+                "total_goals": total_goals,
+                "success_rate": task_success_rate,
+                "completion_rate": task_completion_rate,
+                "num_episodes": task_episodes,
+            }
+        )
+        logging.info(f"Current task success rate: {task_success_rate}")
+        logging.info(f"Current task completion rate: {task_completion_rate}")
+        logging.info(f"Current total success rate: {total_success_rate}")
+        logging.info(f"Current total completion rate: {total_completion_rate}")
 
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+    success_rate = float(total_successes) / float(total_episodes)
+    completion_rate = float(total_completion) / float(total_episodes)
+    result = {
+        "task_suite": args.task_suite_name,
+        "success_rate": success_rate,
+        "completion_rate": completion_rate,
+        "total_episodes": total_episodes,
+        "tasks": task_results,
+    }
+    with open(args.result_out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    logging.info(f"Total success rate: {success_rate}")
+    logging.info(f"Total completion rate: {completion_rate}")
     logging.info(f"Total episodes: {total_episodes}")
+    logging.info(f"Saved results to: {args.result_out_path}")
 
 
 def _get_libero_env(task, resolution, seed):
@@ -195,6 +254,34 @@ def _get_libero_env(task, resolution, seed):
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
+
+
+def _get_core_env(env):
+    return getattr(env, "env", env)
+
+
+def _get_goal_states(env):
+    return _get_core_env(env).parsed_problem["goal_state"]
+
+
+def _count_completed_goals(env) -> tuple[int, int]:
+    core_env = _get_core_env(env)
+    goal_state = _get_goal_states(env)
+    completed_goals = sum(bool(core_env._eval_predicate(state)) for state in goal_state)
+    return completed_goals, len(goal_state)
+
+
+def _prepare_gripper_action(action, normalize_gripper: bool, invert_gripper: bool) -> np.ndarray:
+    action = np.asarray(action).copy()
+
+    if normalize_gripper:
+        action[6] = action[6] * 2.0 - 1.0
+
+    if invert_gripper:
+        action[6] = -action[6]
+
+    action[6] = np.clip(action[6], -1.0, 1.0)
+    return action
 
 
 def _quat2axisangle(quat):
