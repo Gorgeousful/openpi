@@ -16,3 +16,7 @@ luokang@6024.irmv.top:/data0/luokang/dataset/luokang/conda/
 rsync -avh --progress -e "ssh -p 22" \
 /data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408/16000 \
 luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408
+
+rsync -avh --progress -e "ssh -p 22" \
+/data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408/wandb_id.txt \
+luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408
