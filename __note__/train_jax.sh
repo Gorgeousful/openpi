@@ -59,7 +59,6 @@ pi05_libero_low_mem_finetune \
 --exp-name=pi05_libero_low_mem_finetune-06011512 \
 --resume
 
-
 #: 1k warmup + 2.5e-5 lr + speical discrete state
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
@@ -69,6 +68,15 @@ python scripts/train.py \
 pi05_libero_low_mem_finetune \
 --exp-name=pi05_libero_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
+
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=2,3 \
+python scripts/train.py \
+pi05_libero_low_mem_finetune \
+--exp-name=pi05_libero_low_mem_finetune-06020408 \
+--resume
+
 #: 1k warmup + 2.5e-5 lr + special discrete state + aux(include fast) + detach
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
@@ -79,6 +87,16 @@ pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
 
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=1,2,3,4 \
+python scripts/train.py \
+pi05_libero_custom_low_mem_finetune \
+--exp-name=pi05_libero_custom_low_mem_finetune-06020633 \
+--resume
+
+
+# ==========================================================================================
 
 #: 1k warmup + 2.5e-5 lr + discrete state + aux(include fast) + detach
 HF_HOME=/data0/luokang/.cache/huggingface \
@@ -99,7 +117,6 @@ python scripts/train.py \
 pi05_libero_custom_low_mem_finetune \
 --exp-name=pi05_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
-
 #: 10k warmup + 5e-5 lr
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
