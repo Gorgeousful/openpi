@@ -961,6 +961,7 @@ _CONFIGS = [
             dtype="bfloat16",
             state_as_loc_tokens=False,
             fast_tokenizer_path="ckpts/openpi-assets/fast",
+            action_token_loss_weight=3.0,
         ),
         freeze_filter=pi0_fast_thinking.Pi0FASTThinkingConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(

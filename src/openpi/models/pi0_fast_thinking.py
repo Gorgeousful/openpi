@@ -19,6 +19,7 @@ import openpi.shared.nnx_utils as nnx_utils
 logger = logging.getLogger("openpi")
 
 PALIGEMMA_EOS_TOKEN = 1
+PALIGEMMA_IMAGE_TOKEN = 255999
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -84,6 +85,8 @@ class Pi0FASTThinkingConfig(_model.BaseModelConfig):
     action_horizon: int = 32
     max_token_len: int = 250
     state_as_loc_tokens: bool = False
+    action_token_loss_weight: float = 1.0
+    fast_vocab_size: int = 2048
 
     # Tokenizer for the fast model.
     fast_tokenizer_path: str = "physical-intelligence/fast"
@@ -135,6 +138,9 @@ class Pi0FASTThinkingConfig(_model.BaseModelConfig):
 class Pi0FASTThinking(_model.BaseModel):
     def __init__(self, config: Pi0FASTThinkingConfig, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+        self.action_token_loss_weight = config.action_token_loss_weight
+        self.fast_token_max = PALIGEMMA_IMAGE_TOKEN - 1
+        self.fast_token_min = self.fast_token_max - config.fast_vocab_size + 1
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
@@ -227,11 +233,15 @@ class Pi0FASTThinking(_model.BaseModel):
         )
         logp = jax.nn.log_softmax(logits, axis=-1)
 
-        # Compute CE loss on token targets
+        # Compute CE loss on token targets. FAST action tokens get extra weight, while the denominator
+        # stays on the original loss mask so increasing the weight intentionally increases loss scale.
         assert observation.token_loss_mask is not None, "Token loss mask is required"
-        loss_mask = observation.token_loss_mask[:, 1:]
-        token_pplx = jnp.sum(targets * logp, axis=-1)
-        return -jnp.sum(token_pplx * loss_mask, axis=-1) / jnp.clip(jnp.sum(loss_mask, -1), 1)
+        loss_mask = observation.token_loss_mask[:, 1:].astype(jnp.float32)
+        target_tokens = observation.tokenized_prompt[:, 1:]
+        action_token_mask = (target_tokens >= self.fast_token_min) & (target_tokens <= self.fast_token_max)
+        loss_weight = jnp.where(action_token_mask, self.action_token_loss_weight, 1.0)
+        token_nll = -jnp.sum(targets * logp, axis=-1)
+        return jnp.sum(token_nll * loss_mask * loss_weight, axis=-1) / jnp.clip(jnp.sum(loss_mask, -1), 1)
 
     @override
     def sample_actions(
