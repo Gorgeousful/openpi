@@ -241,7 +241,8 @@ class Pi0FASTThinking(_model.BaseModel):
         action_token_mask = (target_tokens >= self.fast_token_min) & (target_tokens <= self.fast_token_max)
         loss_weight = jnp.where(action_token_mask, self.action_token_loss_weight, 1.0)
         token_nll = -jnp.sum(targets * logp, axis=-1)
-        return jnp.sum(token_nll * loss_mask * loss_weight, axis=-1) / jnp.clip(jnp.sum(loss_mask, -1), 1)
+        weighted_loss_mask = loss_mask * loss_weight
+        return jnp.sum(token_nll * weighted_loss_mask, axis=-1) / jnp.clip(jnp.sum(weighted_loss_mask, -1), 1)
 
     @override
     def sample_actions(
