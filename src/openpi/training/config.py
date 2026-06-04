@@ -961,7 +961,7 @@ _CONFIGS = [
             discrete_state_input=True, 
             paligemma_variant="gemma_2b_lora", 
             dtype="bfloat16",
-            state_as_loc_tokens=True,
+            state_as_loc_tokens=False,
         ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
@@ -1097,7 +1097,7 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             dtype="bfloat16",
             state_as_loc_tokens=False,
-            oft_action_loss_weight=1.0,
+            oft_thinking_loss_weight=1.0,
             action_mlp_num_blocks=2,
             action_query_token_id=244502,  # 🔍
         ),

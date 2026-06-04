@@ -162,10 +162,22 @@ pi0_ar_thinking_libero_custom_low_mem_finetune \
 --resume
 
 #: oft thinking + discrete state
+WANDB_MODE=disabled \
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-CUDA_VISIBLE_DEVICES=1,2 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.75 \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+CUDA_VISIBLE_DEVICES=1 \
+python scripts/train.py \
+pi0_oft_thinking_libero_custom_low_mem_finetune \
+--exp-name=pi0_oft_thinking_libero_custom_low_mem_finetune-test \
+--batch_size=16 \
+--overwrite
+
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.75 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
 python scripts/train.py \
 pi0_oft_thinking_libero_custom_low_mem_finetune \
 --exp-name=pi0_oft_thinking_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \

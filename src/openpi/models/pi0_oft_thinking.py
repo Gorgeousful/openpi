@@ -63,7 +63,7 @@ class Pi0OFTThinkingConfig(_model.BaseModelConfig):
     action_horizon: int = 32
     max_token_len: int = 250
     state_as_loc_tokens: bool = False
-    oft_action_loss_weight: float = 1.0
+    oft_thinking_loss_weight: float = 1.0
     action_mlp_hidden_dim: int | None = None
     action_mlp_num_blocks: int = 2
     action_query_token_id: int = PALIGEMMA_DEFAULT_ACTION_QUERY_TOKEN
@@ -147,7 +147,7 @@ class MLPResNetActionHead(nnx.Module):
 class Pi0OFTThinking(_model.BaseModel):
     def __init__(self, config: Pi0OFTThinkingConfig, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
-        self.oft_action_loss_weight = config.oft_action_loss_weight
+        self.oft_thinking_loss_weight = config.oft_thinking_loss_weight
         self.action_query_token = config.action_query_token_id
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
@@ -305,7 +305,7 @@ class Pi0OFTThinking(_model.BaseModel):
         action_query_hidden = self._gather_action_query_hidden(token_hidden, token_ids_for_hidden)
         pred_actions = self._action_head(action_query_hidden)
         oft_action_loss = jnp.mean(jnp.abs(pred_actions - actions), axis=(-1, -2))
-        total_loss = thinking_loss + self.oft_action_loss_weight * oft_action_loss
+        total_loss = oft_action_loss + self.oft_thinking_loss_weight * thinking_loss
         return total_loss, thinking_loss, oft_action_loss
 
     @override
@@ -321,10 +321,9 @@ class Pi0OFTThinking(_model.BaseModel):
     ):
         total_loss, thinking_loss, oft_action_loss = self._compute_losses(rng, observation, actions, train=train)
         return total_loss, {
-            "action_loss": jnp.mean(total_loss),
-            "thinking_loss": jnp.mean(thinking_loss),
-            "oft_action_loss": jnp.mean(oft_action_loss),
-            "auxiliary_loss": jnp.asarray(0.0),
+            "action_loss": jnp.mean(oft_action_loss),
+            "auxiliary_loss": jnp.mean(thinking_loss),
+            "weighted_auxiliary_loss": self.oft_thinking_loss_weight * jnp.mean(thinking_loss),
         }
 
     @override
