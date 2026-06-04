@@ -78,7 +78,7 @@ def put_along_last_axis(arr, indices, values):
 
 
 @dataclasses.dataclass(frozen=True)
-class Pi0FASTThinkingConfig(_model.BaseModelConfig):
+class Pi0ARThinkingConfig(_model.BaseModelConfig):
     dtype: str = "bfloat16"
     paligemma_variant: _gemma.Variant = "gemma_2b"
 
@@ -88,22 +88,20 @@ class Pi0FASTThinkingConfig(_model.BaseModelConfig):
     max_token_len: int = 250
     state_as_loc_tokens: bool = False
     action_token_loss_weight: float = 1.0
-    fast_vocab_size: int = 2048
+    num_action_bins: int = 256
 
-    # Tokenizer for the fast model.
-    fast_tokenizer_path: str = "physical-intelligence/fast"
-    fast_model_tokenizer: Any | None = _tokenizer.FASTThinkingTokenizer
-    # Keyword arguments for the fast model tokenizer.
-    fast_model_tokenizer_kwargs: dict[str, Any] | None = None
+    # Tokenizer for the AR-style discrete action model.
+    ar_model_tokenizer: Any | None = _tokenizer.ARThinkingTokenizer
+    ar_model_tokenizer_kwargs: dict[str, Any] | None = None
 
     @property
     @override
     def model_type(self) -> _model.ModelType:
-        return _model.ModelType.PI0_FAST_THINKING
+        return _model.ModelType.PI0_AR_THINKING
 
     @override
-    def create(self, rng: at.KeyArrayLike) -> "Pi0FASTThinking":
-        return Pi0FASTThinking(self, rngs=nnx.Rngs(rng))
+    def create(self, rng: at.KeyArrayLike) -> "Pi0ARThinking":
+        return Pi0ARThinking(self, rngs=nnx.Rngs(rng))
 
     @override
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
@@ -137,12 +135,13 @@ class Pi0FASTThinkingConfig(_model.BaseModelConfig):
         return nnx.Nothing
 
 
-class Pi0FASTThinking(_model.BaseModel):
-    def __init__(self, config: Pi0FASTThinkingConfig, rngs: nnx.Rngs):
+class Pi0ARThinking(_model.BaseModel):
+    def __init__(self, config: Pi0ARThinkingConfig, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.action_token_loss_weight = config.action_token_loss_weight
-        self.fast_token_max = PALIGEMMA_IMAGE_TOKEN - 1
-        self.fast_token_min = self.fast_token_max - config.fast_vocab_size + 1
+        self.num_action_tokens = config.action_horizon * config.action_dim
+        self.action_token_max = PALIGEMMA_IMAGE_TOKEN - 1
+        self.action_token_min = self.action_token_max - config.num_action_bins + 1
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
@@ -235,12 +234,12 @@ class Pi0FASTThinking(_model.BaseModel):
         )
         logp = jax.nn.log_softmax(logits, axis=-1)
 
-        # Compute CE loss on token targets. FAST action tokens get extra weight, while the denominator
+        # Compute CE loss on token targets. AR action tokens get extra weight, while the denominator
         # stays on the original loss mask so increasing the weight intentionally increases loss scale.
         assert observation.token_loss_mask is not None, "Token loss mask is required"
         loss_mask = observation.token_loss_mask[:, 1:].astype(jnp.float32)
         target_tokens = observation.tokenized_prompt[:, 1:]
-        action_token_mask = (target_tokens >= self.fast_token_min) & (target_tokens <= self.fast_token_max)
+        action_token_mask = (target_tokens >= self.action_token_min) & (target_tokens <= self.action_token_max)
         loss_weight = jnp.where(action_token_mask, self.action_token_loss_weight, 1.0)
         token_nll = -jnp.sum(targets * logp, axis=-1)
         weighted_loss_mask = loss_mask * loss_weight
@@ -284,22 +283,30 @@ class Pi0FASTThinking(_model.BaseModel):
         last_logit = prefix_logits[:, -1:]
         output_tokens = jnp.zeros((last_logit.shape[0], max_decoding_steps), dtype=jnp.int32)
 
-        fast_action_allowed_tokens = (
-            (jnp.arange(self.PaliGemma.llm.module.vocab_size) >= self.fast_token_min)
-            & (jnp.arange(self.PaliGemma.llm.module.vocab_size) <= self.fast_token_max)
-        ) | (jnp.arange(self.PaliGemma.llm.module.vocab_size) == PALIGEMMA_ACTION_END_TOKEN) | (
-            jnp.arange(self.PaliGemma.llm.module.vocab_size) == PALIGEMMA_EOS_TOKEN
-        )
+        vocab_ids = jnp.arange(self.PaliGemma.llm.module.vocab_size)
+        action_allowed_tokens = (vocab_ids >= self.action_token_min) & (vocab_ids <= self.action_token_max)
+        end_allowed_tokens = vocab_ids == PALIGEMMA_ACTION_END_TOKEN
+        eos_allowed_tokens = vocab_ids == PALIGEMMA_EOS_TOKEN
 
         def step(carry):
-            rng, last_logit, output_tokens, cache, _, step, in_action_span = carry
+            rng, last_logit, output_tokens, cache, _, step, in_action_span, action_token_count, ended_action_span = carry
 
-            # Sample token from last logit. Once <unused1> has been generated, constrain every
-            # following token to FAST action tokens plus the action terminators.
+            # Sample token from last logit. Once <unused1> has been generated, force exactly
+            # action_horizon * action_dim AR action tokens, then |, then eos.
             rng, rng_step = jax.random.split(rng)
+            force_action = in_action_span & (action_token_count < self.num_action_tokens)
+            force_end = in_action_span & (action_token_count == self.num_action_tokens) & (~ended_action_span)
+            force_eos = in_action_span & ended_action_span
+            allowed_tokens = (
+                action_allowed_tokens[None, None, :] & force_action[:, None, None]
+            ) | (
+                end_allowed_tokens[None, None, :] & force_end[:, None, None]
+            ) | (
+                eos_allowed_tokens[None, None, :] & force_eos[:, None, None]
+            )
             masked_logit = jnp.where(
                 in_action_span[:, None, None],
-                jnp.where(fast_action_allowed_tokens[None, None, :], last_logit, -jnp.inf),
+                jnp.where(allowed_tokens, last_logit, -jnp.inf),
                 last_logit,
             )
             token = jax.lax.cond(
@@ -313,7 +320,11 @@ class Pi0FASTThinking(_model.BaseModel):
             # Check for early stopping --> stop if all batch elements have EOS token
             has_eos = jnp.any(token == PALIGEMMA_EOS_TOKEN, axis=-1)
             all_eos = jnp.all(has_eos)
-            in_action_span = in_action_span | jnp.any(token == PALIGEMMA_UNUSED1_TOKEN, axis=-1)
+            just_started_action_span = (~in_action_span) & jnp.any(token == PALIGEMMA_UNUSED1_TOKEN, axis=-1)
+            generated_action_token = in_action_span & (action_token_count < self.num_action_tokens)
+            action_token_count = action_token_count + generated_action_token.astype(jnp.int32)
+            ended_action_span = ended_action_span | jnp.any(token == PALIGEMMA_ACTION_END_TOKEN, axis=-1)
+            in_action_span = in_action_span | just_started_action_span
 
             # Decode one step
             token_embedding = self.PaliGemma.llm(token, embed_only=True)
@@ -327,14 +338,27 @@ class Pi0FASTThinking(_model.BaseModel):
                 embedded_prefix=token_embedding, mask=mask, positions=positions, decode=True, kv_cache=cache
             )
 
-            return rng, last_logit, output_tokens, kv_cache, all_eos, step + 1, in_action_span
+            return rng, last_logit, output_tokens, kv_cache, all_eos, step + 1, in_action_span, action_token_count, ended_action_span
 
         def cond(carry):
-            _, _, _, _, all_eos, step, _ = carry
+            _, _, _, _, all_eos, step, _, _, _ = carry
             return (~all_eos) & (step < max_decoding_steps)
 
         # Use lax.while_loop so we can jit the full decoding loop.
-        _, _, output_tokens, _, _, _, _ = jax.lax.while_loop(
-            cond, step, (rng, last_logit, output_tokens, kv_cache, False, 0, jnp.zeros(last_logit.shape[0], dtype=jnp.bool_))
+        batch_size = last_logit.shape[0]
+        _, _, output_tokens, _, _, _, _, _, _ = jax.lax.while_loop(
+            cond,
+            step,
+            (
+                rng,
+                last_logit,
+                output_tokens,
+                kv_cache,
+                False,
+                0,
+                jnp.zeros(batch_size, dtype=jnp.bool_),
+                jnp.zeros(batch_size, dtype=jnp.int32),
+                jnp.zeros(batch_size, dtype=jnp.bool_),
+            ),
         )
         return jnp.concatenate([observation.tokenized_prompt, output_tokens], axis=1)

@@ -1,7 +1,7 @@
 # CKPT_DIR=checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06020408/15000
 # CKPT_DIR=checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06011512/15000
 # CKPT_DIR=checkpoints/pi05_libero_custom_low_mem_finetune/pi05_libero_custom_low_mem_finetune-06020633/17000
-CKPT_DIR=checkpoints/pi0_fast_thinking_libero_custom_low_mem_finetune/pi0_fast_thinking_libero_custom_low_mem_finetune-06031602/18000
+CKPT_DIR=checkpoints/pi0_fast_thinking_libero_custom_low_mem_finetune/pi0_fast_thinking_libero_custom_low_mem_finetune-06031602/15000
 
 HF_HOME=/data0/luokang/.cache/huggingface \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \

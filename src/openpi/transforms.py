@@ -406,6 +406,60 @@ class ExtractFASTThinkingActions(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizeARThinkingInputs(DataTransformFn):
+    tokenizer: _tokenizer.ARThinkingTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+
+        state, actions = data["state"], data.get("actions")
+        grounding = data.pop("grounding", None)
+        subtask = data.pop("subtask", None)
+        focus = data.pop("focus", None)
+        phase = data.pop("phase", None)
+        tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(
+            prompt,
+            state,
+            actions,
+            grounding=grounding,
+            subtask=subtask,
+            focus=focus,
+            phase=phase,
+        )
+        return {
+            **data,
+            "tokenized_prompt": tokens,
+            "tokenized_prompt_mask": token_mask,
+            "token_ar_mask": ar_mask,
+            "token_loss_mask": loss_mask,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class ExtractARThinkingActions(DataTransformFn):
+    tokenizer: _tokenizer.ARThinkingTokenizer
+    action_horizon: int
+    action_dim: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        tokens = data.pop("actions")
+        tokens = tokens.astype(np.int32)
+        actions = self.tokenizer.extract_actions(tokens, self.action_horizon, self.action_dim)
+        outputs = {
+            **data,
+            "actions": actions,
+        }
+        outputs["thinking"] = self.tokenizer.extract_thinking(tokens)
+        return outputs
+
+
+@dataclasses.dataclass(frozen=True)
 class PromptFromLeRobotTask(DataTransformFn):
     """Extracts a prompt from the current LeRobot dataset task."""
 

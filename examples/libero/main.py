@@ -156,7 +156,10 @@ def eval_libero(args: Args) -> None:
                         }
 
                         # Query model to get action
-                        action_chunk = client.infer(element)["actions"]
+                        policy_output = client.infer(element)
+                        if "thinking" in policy_output:
+                            logging.info("Thinking: %s", policy_output["thinking"])
+                        action_chunk = policy_output["actions"]
                         assert (
                             len(action_chunk) >= args.replan_steps
                         ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."

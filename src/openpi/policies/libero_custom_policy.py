@@ -101,7 +101,7 @@ class LiberoCustomInputs(transforms.DataTransformFn):
         base_image = _parse_image(data["observation/image"], horizontal_flip=True)
         wrist_image = _parse_image(data["observation/wrist_image"], horizontal_flip=True)
 
-        if self.model_type == _model.ModelType.PI0_FAST_THINKING:
+        if self.model_type in (_model.ModelType.PI0_FAST_THINKING, _model.ModelType.PI0_AR_THINKING):
             inputs = {
                 "state": data["observation/state"],
                 "image": {
