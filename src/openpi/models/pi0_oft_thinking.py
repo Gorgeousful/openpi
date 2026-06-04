@@ -126,9 +126,11 @@ class MLPResNetBlock(nnx.Module):
 
 class MLPResNetActionHead(nnx.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_blocks: int, rngs: nnx.Rngs):
+        self.num_blocks = num_blocks
         self.norm_in = nnx.LayerNorm(input_dim, rngs=rngs)
         self.fc_in = nnx.Linear(input_dim, hidden_dim, rngs=rngs)
-        self.blocks = [MLPResNetBlock(hidden_dim, rngs=rngs) for _ in range(num_blocks)]
+        for i in range(num_blocks):
+            setattr(self, f"block_{i}", MLPResNetBlock(hidden_dim, rngs=rngs))
         self.norm_out = nnx.LayerNorm(hidden_dim, rngs=rngs)
         self.fc_out = nnx.Linear(hidden_dim, output_dim, rngs=rngs)
 
@@ -136,8 +138,8 @@ class MLPResNetActionHead(nnx.Module):
         x = self.norm_in(x)
         x = self.fc_in(x)
         x = jax.nn.relu(x)
-        for block in self.blocks:
-            x = block(x)
+        for i in range(self.num_blocks):
+            x = getattr(self, f"block_{i}")(x)
         x = self.norm_out(x)
         return self.fc_out(x)
 
