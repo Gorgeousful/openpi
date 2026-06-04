@@ -516,6 +516,140 @@ class ARThinkingTokenizer:
         return str(value)
 
 
+class OFTThinkingTokenizer:
+    def __init__(
+        self,
+        max_len: int = 256,
+        state_as_loc_tokens: bool = False,
+        action_query_token_id: int = 244502,  # 🔍
+        action_query_token: str | None = None,
+    ):
+        self._max_len = max_len
+        self._state_as_loc_tokens = state_as_loc_tokens
+        self.action_query_token_id = action_query_token_id
+
+        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        with path.open("rb") as f:
+            self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
+
+        if action_query_token is not None:
+            action_query_token_ids = self._paligemma_tokenizer.encode(action_query_token)
+            if len(action_query_token_ids) != 1:
+                raise ValueError(f"OFT action query token must encode to one token, got {action_query_token_ids}.")
+            if action_query_token_ids[0] != action_query_token_id:
+                raise ValueError(
+                    f"OFT action query token id mismatch: {action_query_token!r} encodes to "
+                    f"{action_query_token_ids[0]}, but action_query_token_id={action_query_token_id}."
+                )
+
+    def tokenize(
+        self,
+        prompt: str,
+        state: np.ndarray,
+        actions: np.ndarray | None,
+        *,
+        grounding: str | None = None,
+        subtask: str | None = None,
+        focus: str | None = None,
+        phase: str | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_text = self._as_text(prompt).lower().strip().replace("_", " ")
+
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        discretized_state = np.clip(discretized_state, 0, 255)
+        if self._state_as_loc_tokens:
+            state_str = " ".join(f"<loc{value:04d}>" for value in discretized_state)
+        else:
+            state_str = " ".join(map(str, discretized_state))
+
+        prefix = f"Task: {cleaned_text}\nState: {state_str}\n<unused0>"
+        prefix_tokens = self._paligemma_tokenizer.encode(prefix, add_bos=True)
+
+        if actions is not None:
+            action_horizon = int(np.asarray(actions).shape[0])
+            grounding_text = self._as_text(grounding)
+            subtask_text = self._as_text(subtask)
+            focus_text = self._as_text(focus)
+            phase_text = self._as_text(phase)
+            thinking_text = (
+                f"Grounding: {grounding_text}\n"
+                f"Subtask: {subtask_text}\n"
+                f"Focus: {focus_text}\n"
+                f"Phase: {phase_text}\n"
+                "Action: <unused1>"
+            )
+            thinking_tokens = self._paligemma_tokenizer.encode(thinking_text)
+            action_query_tokens = [self.action_query_token_id] * action_horizon
+            end_tokens = self._paligemma_tokenizer.encode("|", add_eos=True)
+            postfix_tokens = thinking_tokens + action_query_tokens + end_tokens
+            postfix_loss_mask = [True] * len(thinking_tokens) + [False] * (len(action_query_tokens) + len(end_tokens))
+        else:
+            postfix_tokens = []
+            postfix_loss_mask = []
+
+        tokens = prefix_tokens + postfix_tokens
+        token_mask = [True] * len(tokens)
+        ar_mask = [0] * len(prefix_tokens) + [1] * len(postfix_tokens)
+        loss_mask = [False] * len(prefix_tokens) + postfix_loss_mask
+
+        if len(tokens) < self._max_len:
+            padding = [False] * (self._max_len - len(tokens))
+            tokens = tokens + padding
+            token_mask = token_mask + padding
+            ar_mask = ar_mask + padding
+            loss_mask = loss_mask + padding
+        else:
+            if len(tokens) > self._max_len:
+                logging.warning(
+                    f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            token_mask = token_mask[: self._max_len]
+            ar_mask = ar_mask[: self._max_len]
+            loss_mask = loss_mask[: self._max_len]
+
+        return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
+
+    def extract_thinking(self, tokens: np.ndarray) -> str:
+        tokens = np.asarray(tokens, dtype=np.int32).reshape(-1)
+        start_pattern = self._paligemma_tokenizer.encode("<unused0>")
+        end_pattern = self._paligemma_tokenizer.encode("<unused1>")
+        thinking_start = self._find_subsequence(tokens, start_pattern)
+        thinking_end = self._find_subsequence(tokens, end_pattern)
+        if thinking_start < 0 or thinking_end < 0 or thinking_end <= thinking_start:
+            raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
+
+        thinking_start += len(start_pattern)
+        thinking_tokens = tokens[thinking_start:thinking_end]
+        thinking_tokens = thinking_tokens[thinking_tokens != self._paligemma_tokenizer.pad_id()]
+        if thinking_tokens.size == 0:
+            return ""
+        return self._paligemma_tokenizer.decode(thinking_tokens.tolist()).strip()
+
+    @staticmethod
+    def _find_subsequence(tokens: np.ndarray, pattern: list[int]) -> int:
+        if not pattern or len(tokens) < len(pattern):
+            return -1
+        pattern_array = np.asarray(pattern, dtype=tokens.dtype)
+        for idx in range(len(tokens) - len(pattern_array) + 1):
+            if np.array_equal(tokens[idx : idx + len(pattern_array)], pattern_array):
+                return idx
+        return -1
+
+    @staticmethod
+    def _as_text(value: object | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "item"):
+            return OFTThinkingTokenizer._as_text(value.item())
+        return str(value)
+
+
 ###########################################################################
 ## The tokenizers below are used for RoboArena baseline implementations. ##
 ## They are *not* used for pi0-style models.                             ##

@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.pi0_fast_thinking as pi0_fast_thinking
 import openpi.models.pi0_ar_thinking as pi0_ar_thinking
+import openpi.models.pi0_oft_thinking as pi0_oft_thinking
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
@@ -256,6 +257,39 @@ class ModelTransformFactory(GroupFactory):
                             ),
                             action_horizon=model_config.action_horizon,
                             action_dim=model_config.action_dim,
+                        )
+                    ],
+                )
+            case _model.ModelType.PI0_OFT_THINKING:
+                tokenizer_cls = (
+                    _tokenizer.OFTThinkingTokenizer
+                    if model_config.oft_model_tokenizer is None
+                    else model_config.oft_model_tokenizer
+                )
+                tokenizer_kwargs = (
+                    {} if model_config.oft_model_tokenizer_kwargs is None else model_config.oft_model_tokenizer_kwargs
+                )
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeOFTThinkingInputs(
+                            tokenizer_cls(
+                                model_config.max_token_len,
+                                state_as_loc_tokens=model_config.state_as_loc_tokens,
+                                action_query_token_id=model_config.action_query_token_id,
+                                **tokenizer_kwargs,
+                            ),
+                        ),
+                    ],
+                    outputs=[
+                        _transforms.ExtractOFTThinkingOutputs(
+                            tokenizer_cls(
+                                model_config.max_token_len,
+                                state_as_loc_tokens=model_config.state_as_loc_tokens,
+                                action_query_token_id=model_config.action_query_token_id,
+                                **tokenizer_kwargs,
+                            ),
                         )
                     ],
                 )
@@ -1050,6 +1084,43 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=None,
         weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/paligemma-3b-mix-224-jax/params"),
+        pytorch_weight_path=None,
+        num_train_steps=50_000,
+    ),
+    #: oft thinking
+    TrainConfig(
+        name="pi0_oft_thinking_libero_custom_low_mem_finetune",
+        model=pi0_oft_thinking.Pi0OFTThinkingConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=250,
+            paligemma_variant="gemma_2b_lora",
+            dtype="bfloat16",
+            state_as_loc_tokens=False,
+            oft_action_loss_weight=1.0,
+            action_mlp_num_blocks=2,
+            action_query_token_id=244502,  # 🔍
+        ),
+        freeze_filter=pi0_oft_thinking.Pi0OFTThinkingConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
+        data=LeRobotLiberoCustomDataConfig(
+            repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=64, # 256
+        gradient_accumulation_steps=1,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "ckpts/openpi-assets/checkpoints/paligemma-3b-mix-224-jax/params",
+            missing_regex=".*",
+        ),
         pytorch_weight_path=None,
         num_train_steps=50_000,
     ),

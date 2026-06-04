@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 import dataclasses
+import logging
 import re
 from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 
@@ -457,6 +458,70 @@ class ExtractARThinkingActions(DataTransformFn):
         }
         outputs["thinking"] = self.tokenizer.extract_thinking(tokens)
         return outputs
+
+
+@dataclasses.dataclass(frozen=True)
+class TokenizeOFTThinkingInputs(DataTransformFn):
+    tokenizer: _tokenizer.OFTThinkingTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+
+        state, actions = data["state"], data.get("actions")
+        grounding = data.pop("grounding", None)
+        subtask = data.pop("subtask", None)
+        focus = data.pop("focus", None)
+        phase = data.pop("phase", None)
+        tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(
+            prompt,
+            state,
+            actions,
+            grounding=grounding,
+            subtask=subtask,
+            focus=focus,
+            phase=phase,
+        )
+        return {
+            **data,
+            "tokenized_prompt": tokens,
+            "tokenized_prompt_mask": token_mask,
+            "token_ar_mask": ar_mask,
+            "token_loss_mask": loss_mask,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class ExtractOFTThinkingOutputs(DataTransformFn):
+    tokenizer: _tokenizer.OFTThinkingTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "tokens" not in data:
+            return data
+        tokens = data.pop("tokens")
+        tokens = tokens.astype(np.int32)
+        stopped_by_eos = bool(np.any(data.pop("oft_stopped_by_eos_without_unused1", False)))
+        reached_max = bool(np.any(data.pop("oft_reached_max_without_unused1", False)))
+
+        if stopped_by_eos:
+            logging.warning("OFT thinking generation stopped by <eos> before generating <unused1>; using action queries anyway.")
+        if reached_max:
+            logging.warning("OFT thinking generation reached max_decoding_steps before generating <unused1>; using action queries anyway.")
+
+        try:
+            thinking = self.tokenizer.extract_thinking(tokens)
+        except ValueError:
+            if not (stopped_by_eos or reached_max):
+                raise
+            thinking = ""
+
+        return {
+            **data,
+            "thinking": thinking,
+        }
 
 
 @dataclasses.dataclass(frozen=True)

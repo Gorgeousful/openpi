@@ -152,6 +152,26 @@ pi0_ar_thinking_libero_custom_low_mem_finetune \
 --exp-name=pi0_ar_thinking_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
 --overwrite
 
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=1,2 \
+python scripts/train.py \
+pi0_ar_thinking_libero_custom_low_mem_finetune \
+--exp-name=pi0_ar_thinking_libero_custom_low_mem_finetune-06040441 \
+--resume
+
+#: oft thinking + discrete state
+HF_HOME=/data0/luokang/.cache/huggingface \
+HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=1,2 \
+python scripts/train.py \
+pi0_oft_thinking_libero_custom_low_mem_finetune \
+--exp-name=pi0_oft_thinking_libero_custom_low_mem_finetune-$(date +%m%d%H%M) \
+--overwrite
+
+
 
 # ==========================================================================================
 
