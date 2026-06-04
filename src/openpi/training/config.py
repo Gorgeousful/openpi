@@ -997,7 +997,7 @@ _CONFIGS = [
             dtype="bfloat16",
             state_as_loc_tokens=False,
             fast_tokenizer_path="ckpts/openpi-assets/fast",
-            action_token_loss_weight=3.0,
+            action_token_loss_weight=1.0,
         ),
         freeze_filter=pi0_fast_thinking.Pi0FASTThinkingConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
@@ -1026,17 +1026,16 @@ _CONFIGS = [
         model=pi0_ar_thinking.Pi0ARThinkingConfig(
             action_dim=7,
             action_horizon=10,
-            max_token_len=200,
+            max_token_len=250,
             paligemma_variant="gemma_2b_lora",
             dtype="bfloat16",
             state_as_loc_tokens=False,
             num_action_bins=256,
-            action_token_loss_weight=3.0,
+            action_token_loss_weight=1.0,
         ),
         freeze_filter=pi0_ar_thinking.Pi0ARThinkingConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
             repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
-            assets=AssetsConfig(asset_id="pi0_fast_thinking_libero_custom_low_mem_finetune"),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
