@@ -36,3 +36,8 @@ luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi05_lib
 rsync -avh --progress -e "ssh -p 22" \
 luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06011512/30000 \
 /data0/luokang/research/openpi/openpi/checkpoints/pi05_libero_low_mem_finetune/pi05_libero_low_mem_finetune-06011512/
+
+
+rsync -avh --progress -e "ssh -p 22" \
+luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi0_oft_thinking_libero_custom_low_mem_finetune/pi0_oft_thinking_libero_custom_low_mem_finetune-06041738/30000 \
+/data0/luokang/research/openpi/openpi/checkpoints/pi0_oft_thinking_libero_custom_low_mem_finetune/pi0_oft_thinking_libero_custom_low_mem_finetune-06041738

@@ -163,7 +163,7 @@ def eval_libero(args: Args) -> None:
                         policy_output = client.infer(element)
                         if "thinking" in policy_output:
                             thinking = policy_output["thinking"]
-                            logging.info("Thinking: %s", thinking)
+                            logging.info("Thinking: %s\n", thinking)
                         action_chunk = policy_output["actions"]
                         assert (
                             len(action_chunk) >= args.replan_steps

@@ -185,10 +185,14 @@ class Pi0OFTThinking(_model.BaseModel):
     def embed_inputs(
         self,
         obs: _model.Observation,
-        tokens: at.Int[at.Array, "b s"] | None = None,
-        token_mask: at.Bool[at.Array, "b s"] | None = None,
-        token_ar_mask: at.Int[at.Array, "b s"] | None = None,
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
+        tokens: at.Int[at.Array, "b token_s"] | None = None,
+        token_mask: at.Bool[at.Array, "b token_s"] | None = None,
+        token_ar_mask: at.Int[at.Array, "b token_s"] | None = None,
+    ) -> tuple[
+        at.Float[at.Array, "b total_s emb"],
+        at.Bool[at.Array, "b total_s"],
+        at.Int[at.Array, "b total_s"],
+    ]:
         input_mask = []
         ar_mask = []
         token_embeddings = []
