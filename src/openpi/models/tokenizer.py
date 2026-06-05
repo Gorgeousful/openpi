@@ -11,6 +11,14 @@ import openpi.models.utils.fsq_tokenizer as fsq_tokenizer
 import openpi.shared.download as download
 
 
+def _decoded_token_error(message: str, tokenizer, tokens: np.ndarray) -> ValueError:
+    try:
+        decoded = tokenizer.decode(np.asarray(tokens, dtype=np.int32).reshape(-1).tolist())
+    except Exception as exc:
+        decoded = f"<failed to decode model output: {exc}>"
+    return ValueError(f"{message}\nDecoded model output:\n{decoded}")
+
+
 class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48, aux_max_len: int = 200, state_as_loc_tokens: bool = False):
         self._max_len = max_len
@@ -287,7 +295,11 @@ class FASTThinkingTokenizer:
         action_start = self._find_subsequence(tokens, start_pattern)
         action_end = self._find_subsequence(tokens, end_pattern)
         if action_start < 0 or action_end < 0 or action_end <= action_start:
-            raise ValueError("Could not find a valid <unused1> ... | action span in generated tokens.")
+            raise _decoded_token_error(
+                "Could not find a valid <unused1> ... | action span in generated tokens.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
 
         action_start += len(start_pattern)
         action_tokens = self._paligemma_tokens_to_act_tokens(tokens[action_start:action_end])
@@ -306,7 +318,11 @@ class FASTThinkingTokenizer:
         thinking_start = self._find_subsequence(tokens, start_pattern)
         thinking_end = self._find_subsequence(tokens, end_pattern)
         if thinking_start < 0 or thinking_end < 0 or thinking_end <= thinking_start:
-            raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
+            raise _decoded_token_error(
+                "Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
 
         thinking_start += len(start_pattern)
         thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]
@@ -457,13 +473,21 @@ class ARThinkingTokenizer:
         action_start = self._find_subsequence(tokens, start_pattern)
         action_end = self._find_subsequence(tokens, end_pattern)
         if action_start < 0 or action_end < 0 or action_end <= action_start:
-            raise ValueError("Could not find a valid <unused1> ... | action span in generated tokens.")
+            raise _decoded_token_error(
+                "Could not find a valid <unused1> ... | action span in generated tokens.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
 
         action_start += len(start_pattern)
         action_bins = self._paligemma_tokens_to_act_tokens(tokens[action_start:action_end])
         expected_tokens = action_horizon * action_dim
         if len(action_bins) != expected_tokens:
-            raise ValueError(f"Expected {expected_tokens} AR action tokens, got {len(action_bins)}.")
+            raise _decoded_token_error(
+                f"Expected {expected_tokens} AR action tokens, got {len(action_bins)}.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
         actions = action_bins.astype(np.float32) / (self._num_action_bins - 1) * 2.0 - 1.0
         return actions.reshape(action_horizon, action_dim)
 
@@ -474,7 +498,11 @@ class ARThinkingTokenizer:
         thinking_start = self._find_subsequence(tokens, start_pattern)
         thinking_end = self._find_subsequence(tokens, end_pattern)
         if thinking_start < 0 or thinking_end < 0 or thinking_end <= thinking_start:
-            raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
+            raise _decoded_token_error(
+                "Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
 
         thinking_start += len(start_pattern)
         thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]
@@ -618,7 +646,11 @@ class OFTThinkingTokenizer:
         thinking_start = self._find_subsequence(tokens, start_pattern)
         thinking_end = self._find_subsequence(tokens, end_pattern)
         if thinking_start < 0 or thinking_end < 0 or thinking_end <= thinking_start:
-            raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
+            raise _decoded_token_error(
+                "Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.",
+                self._paligemma_tokenizer,
+                tokens,
+            )
 
         thinking_start += len(start_pattern)
         thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]

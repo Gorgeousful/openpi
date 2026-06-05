@@ -6,7 +6,7 @@ CKPT_DIR=checkpoints/pi0_ar_thinking_libero_custom_low_mem_finetune/pi0_ar_think
 
 HF_HOME=/data0/luokang/.cache/huggingface \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=3 \
 python scripts/serve_policy.py \
 --port 8003 \
 policy:checkpoint \
