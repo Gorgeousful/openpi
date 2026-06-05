@@ -309,7 +309,7 @@ class FASTThinkingTokenizer:
             raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
 
         thinking_start += len(start_pattern)
-        thinking_tokens = tokens[thinking_start:thinking_end]
+        thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]
         thinking_tokens = thinking_tokens[thinking_tokens != self._paligemma_tokenizer.pad_id()]
         if thinking_tokens.size == 0:
             return ""
@@ -477,7 +477,7 @@ class ARThinkingTokenizer:
             raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
 
         thinking_start += len(start_pattern)
-        thinking_tokens = tokens[thinking_start:thinking_end]
+        thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]
         thinking_tokens = thinking_tokens[thinking_tokens != self._paligemma_tokenizer.pad_id()]
         if thinking_tokens.size == 0:
             return ""
@@ -621,7 +621,7 @@ class OFTThinkingTokenizer:
             raise ValueError("Could not find a valid <unused0> ... <unused1> thinking span in generated tokens.")
 
         thinking_start += len(start_pattern)
-        thinking_tokens = tokens[thinking_start:thinking_end]
+        thinking_tokens = tokens[thinking_start : thinking_end + len(end_pattern)]
         thinking_tokens = thinking_tokens[thinking_tokens != self._paligemma_tokenizer.pad_id()]
         if thinking_tokens.size == 0:
             return ""
