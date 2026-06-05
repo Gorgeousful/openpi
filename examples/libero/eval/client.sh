@@ -21,6 +21,8 @@ python examples/libero/main.py \
 --args.video_out_path "$RESULT_DIR/videos" \
 --args.result_out_path "$RESULT_DIR/result.json" \
 --args.port 8003 \
+--args.flip_video \
+--args.draw_grounding \
 2>&1 | tee "$RESULT_DIR/result.log"
 
 

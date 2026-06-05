@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import pathlib
+import re
 
 import imageio
 from libero.libero import benchmark
@@ -48,6 +49,8 @@ class Args:
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
     result_out_path: str = "data/libero/results.json"  # Path to save evaluation metrics
+    draw_grounding: bool = False  # Draw Grounding: bbox output from policy thinking on saved replay videos
+    flip_video: bool = False  # Horizontally flip only the frames saved to replay videos
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -136,8 +139,7 @@ def eval_libero(args: Args) -> None:
                         image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
                     )
 
-                    # Save preprocessed image for replay video
-                    replay_images.append(img)
+                    thinking = None
 
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
@@ -158,12 +160,23 @@ def eval_libero(args: Args) -> None:
                         # Query model to get action
                         policy_output = client.infer(element)
                         if "thinking" in policy_output:
-                            logging.info("Thinking: %s", policy_output["thinking"])
+                            thinking = policy_output["thinking"]
+                            logging.info("Thinking: %s", thinking)
                         action_chunk = policy_output["actions"]
                         assert (
                             len(action_chunk) >= args.replan_steps
                         ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                         action_plan.extend(action_chunk[: args.replan_steps])
+
+                    # Save preprocessed image for replay video. This does not affect the model input image.
+                    replay_images.append(
+                        _prepare_replay_image(
+                            img,
+                            thinking=thinking,
+                            draw_grounding=args.draw_grounding,
+                            flip_video=args.flip_video,
+                        )
+                    )
 
                     action = action_plan.popleft()
                     action = _prepare_gripper_action(
@@ -285,6 +298,104 @@ def _prepare_gripper_action(action, normalize_gripper: bool, invert_gripper: boo
 
     action[6] = np.clip(action[6], -1.0, 1.0)
     return action
+
+_LOC_BBOX_PATTERN = re.compile(
+    r"<loc(?P<ymin>\d{4})><loc(?P<xmin>\d{4})><loc(?P<ymax>\d{4})><loc(?P<xmax>\d{4})>\s*(?P<label>[^;]*)"
+)
+
+
+def _prepare_replay_image(
+    image: np.ndarray,
+    *,
+    thinking: str | None,
+    draw_grounding: bool,
+    flip_video: bool,
+) -> np.ndarray:
+    replay_image = np.asarray(image).copy()
+    if flip_video:
+        replay_image = np.ascontiguousarray(replay_image[:, ::-1])
+
+    if draw_grounding and thinking:
+        boxes = _extract_grounding_boxes(thinking, replay_image.shape)
+        if boxes:
+            replay_image = _draw_grounding_boxes(replay_image, boxes)
+    return replay_image
+
+
+def _extract_grounding_boxes(thinking: str, image_shape: tuple[int, ...]) -> list[tuple[str, int, int, int, int]]:
+    match = re.search(r"Grounding:\s*([^\r\n]*)", str(thinking), flags=re.IGNORECASE)
+    if match is None:
+        return []
+
+    height, width = image_shape[:2]
+    boxes = []
+    for bbox_match in _LOC_BBOX_PATTERN.finditer(match.group(1)):
+        loc_ymin = int(bbox_match.group("ymin"))
+        loc_xmin = int(bbox_match.group("xmin"))
+        loc_ymax = int(bbox_match.group("ymax"))
+        loc_xmax = int(bbox_match.group("xmax"))
+        xmin = _loc_to_pixel(loc_xmin, width)
+        xmax = _loc_to_pixel(loc_xmax, width)
+        ymin = _loc_to_pixel(loc_ymin, height)
+        ymax = _loc_to_pixel(loc_ymax, height)
+        if xmax <= xmin or ymax <= ymin:
+            continue
+        label = bbox_match.group("label").strip()
+        if label.lower().startswith("none"):
+            continue
+        boxes.append((label, xmin, ymin, xmax, ymax))
+    return boxes
+
+
+def _loc_to_pixel(loc: int, size: int) -> int:
+    return int(np.clip(round(float(loc) / 1023.0 * size), 0, size - 1))
+
+
+def _draw_grounding_boxes(image: np.ndarray, boxes: list[tuple[str, int, int, int, int]]) -> np.ndarray:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        logging.warning("PIL is not installed; drawing grounding boxes without labels.")
+        return _draw_grounding_boxes_numpy(image, boxes)
+
+    colors = [
+        (255, 64, 64),
+        (64, 192, 255),
+        (64, 220, 120),
+        (255, 192, 64),
+        (192, 96, 255),
+    ]
+    pil_image = Image.fromarray(np.asarray(image))
+    draw = ImageDraw.Draw(pil_image)
+    for box_idx, (label, xmin, ymin, xmax, ymax) in enumerate(boxes):
+        color = colors[box_idx % len(colors)]
+        draw.rectangle((xmin, ymin, xmax, ymax), outline=color, width=2)
+        if label:
+            text_position = (xmin, max(0, ymin - 12))
+            try:
+                text_bbox = draw.textbbox(text_position, label)
+            except AttributeError:
+                text_width, text_height = draw.textsize(label)
+                text_bbox = (
+                    text_position[0],
+                    text_position[1],
+                    text_position[0] + text_width,
+                    text_position[1] + text_height,
+                )
+            draw.rectangle(text_bbox, fill=color)
+            draw.text(text_position, label, fill=(255, 255, 255))
+    return np.asarray(pil_image)
+
+
+def _draw_grounding_boxes_numpy(image: np.ndarray, boxes: list[tuple[str, int, int, int, int]]) -> np.ndarray:
+    image = np.asarray(image).copy()
+    color = np.asarray([255, 64, 64], dtype=image.dtype)
+    for _, xmin, ymin, xmax, ymax in boxes:
+        image[ymin : min(ymin + 2, image.shape[0]), xmin : xmax + 1] = color
+        image[max(ymax - 1, 0) : ymax + 1, xmin : xmax + 1] = color
+        image[ymin : ymax + 1, xmin : min(xmin + 2, image.shape[1])] = color
+        image[ymin : ymax + 1, max(xmax - 1, 0) : xmax + 1] = color
+    return image
 
 
 def _quat2axisangle(quat):
