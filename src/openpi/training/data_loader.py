@@ -7,7 +7,13 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+try:
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+except ModuleNotFoundError:
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+
+
 import numpy as np
 import torch
 
@@ -57,6 +63,46 @@ class TransformedDataset(Dataset[T_co]):
 
     def __getitem__(self, index: SupportsIndex) -> T_co:
         return self._transform(self._dataset[index])
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+
+class GramTargetDataset(Dataset):
+    """Attach memory-mapped DINOv3 Gram targets using the LeRobot global frame index."""
+
+    def __init__(self, dataset: Dataset, target_dir: str):
+        self._dataset = dataset
+        self._target_dir = target_dir
+        self._grams = None
+
+        for filename in ("base_0_rgb.npy", "left_wrist_0_rgb.npy"):
+            path = os.path.join(target_dir, filename)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Missing Gram target file: {path}")
+            array = np.load(path, mmap_mode="r")
+            if array.shape != (len(dataset), 256, 256):
+                raise ValueError(f"Unexpected shape for {path}: {array.shape}; expected {(len(dataset), 256, 256)}")
+
+    def _load_grams(self):
+        if self._grams is None:
+            self._grams = {
+                "base": np.load(os.path.join(self._target_dir, "base_0_rgb.npy"), mmap_mode="r"),
+                "wrist": np.load(os.path.join(self._target_dir, "left_wrist_0_rgb.npy"), mmap_mode="r"),
+            }
+        return self._grams
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = dict(self._dataset[index])
+        frame_index = int(np.asarray(sample["index"]).item())
+        if not 0 <= frame_index < len(self):
+            raise IndexError(f"LeRobot global frame index {frame_index} is outside [0, {len(self)})")
+        grams = self._load_grams()
+        sample["dino_gram"] = {
+            "base": np.array(grams["base"][frame_index], copy=True),
+            "wrist": np.array(grams["wrist"][frame_index], copy=True),
+        }
+        return sample
 
     def __len__(self) -> int:
         return len(self._dataset)
@@ -147,6 +193,8 @@ def create_torch_dataset(
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    if data_config.gram_target_dir is not None:
+        dataset = GramTargetDataset(dataset, data_config.gram_target_dir)
 
     return dataset
 

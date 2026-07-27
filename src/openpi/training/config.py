@@ -15,6 +15,7 @@ import tyro
 
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
+import openpi.models.pi0_gram as pi0_gram
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.pi0_fast_thinking as pi0_fast_thinking
 import openpi.models.pi0_ar_thinking as pi0_ar_thinking
@@ -23,6 +24,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_custom_policy as libero_custom_policy
+import openpi.policies.libero_gram_policy as libero_gram_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -93,6 +95,8 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # Optional directory containing DINOv3 Gram targets aligned by the LeRobot global frame index.
+    gram_target_dir: str | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -486,6 +490,54 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotLiberoGramDataConfig(DataConfigFactory):
+    """Minimal LIBERO data config with offline DINOv3 Gram targets."""
+
+    gram_target_dir: str = tyro.MISSING
+    extra_delta_transform: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.image",
+                        "observation/wrist_image": "observation.images.wrist_image",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        "dino_gram": {
+                            "base": "dino_gram/base",
+                            "wrist": "dino_gram/wrist",
+                        },
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[libero_gram_policy.LiberoGramInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=("action",),
+            gram_target_dir=self.gram_target_dir,
+        )
+
 
 #: expr
 @dataclasses.dataclass(frozen=True)
@@ -952,7 +1004,7 @@ _CONFIGS = [
         pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
         num_train_steps=30_000,
     ),
-    #: expr
+    #: baseline
     TrainConfig(
         name="pi05_libero_low_mem_finetune",
         model=pi0_config.Pi0Config(
@@ -983,6 +1035,46 @@ _CONFIGS = [
         pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
         num_train_steps=50_000,
     ),
+    #: gram matrix  (wo. img aug)
+    TrainConfig(
+        name="pi05_libero_gram_low_mem_finetune",
+        model=pi0_gram.Pi0GramConfig(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora",
+            dtype="bfloat16",
+            state_as_loc_tokens=False,
+            gram_loss_weight=0.5,
+            gram_layer=12,
+            gram_remove_negative=True,
+            gram_use_wrist=True,
+        ),
+        freeze_filter=pi0_gram.Pi0GramConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
+        data=LeRobotLiberoGramDataConfig(
+            repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
+            gram_target_dir=(
+                "/data0/luokang/dataset/luokang/lerobot/libero/"
+                "libero_all_no_noops_1.0.0_lerobot_10hz_dino_gram_vitl16_l24_256"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=64,
+        gradient_accumulation_steps=1,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
+        num_train_steps=50_000,
+    ),
+    #: expr
     TrainConfig(
         name="pi05_libero_custom_low_mem_finetune",
         model=pi0_config.Pi0Config(

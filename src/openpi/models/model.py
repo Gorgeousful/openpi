@@ -108,6 +108,9 @@ class Observation(Generic[ArrayT]):
     tokenized_auxiliary: at.Int[ArrayT, "*b al"] | None = None
     tokenized_auxiliary_mask: at.Bool[ArrayT, "*b al"] | None = None
 
+    # Optional offline DINOv3 Gram targets, keyed like `images`.
+    dino_gram: dict[str, at.Float[ArrayT, "*b n n"]] | None = None
+
     # pi0-fast model specific fields.
 
     # Token auto-regressive mask (for FAST autoregressive model).
@@ -138,6 +141,7 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             tokenized_auxiliary=data.get("tokenized_auxiliary"),
             tokenized_auxiliary_mask=data.get("tokenized_auxiliary_mask"),
+            dino_gram=data.get("dino_gram"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
         )
@@ -219,6 +223,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         tokenized_auxiliary=observation.tokenized_auxiliary,
         tokenized_auxiliary_mask=observation.tokenized_auxiliary_mask,
+        dino_gram=observation.dino_gram,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
     )
