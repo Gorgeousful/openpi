@@ -129,8 +129,6 @@ class Pi0GramConfig(pi0_config.Pi0Config):
         if self.gram_loss_weight < 0:
             raise ValueError("gram_loss_weight must be non-negative")
         depth = _gemma.get_config(self.paligemma_variant).depth
-        if not self.gram_layers:
-            raise ValueError("gram_layers must not be empty")
         if len(set(self.gram_layers)) != len(self.gram_layers):
             raise ValueError("gram_layers must not contain duplicates")
         if any(not 1 <= layer <= depth for layer in self.gram_layers):
