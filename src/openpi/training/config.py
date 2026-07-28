@@ -1036,7 +1036,45 @@ _CONFIGS = [
         pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
         num_train_steps=50_000,
     ),
-    #: gram matrix  (wo. img aug)
+    #: gram matrix full finetuning (wo. img aug)
+    TrainConfig(
+        name="pi05_libero_gram",
+        model=pi0_gram.Pi0GramConfig(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=True,
+            dtype="bfloat16",
+            state_as_loc_tokens=False,
+            gram_loss_weight=0.5,
+            gram_layers=[12],
+            gram_remove_negative=True,
+            gram_use_wrist=True,
+            use_augmentation=False,
+        ),
+        data=LeRobotLiberoGramDataConfig(
+            repo_id="lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz",
+            gram_target_dir=(
+                "/data0/luokang/dataset/luokang/lerobot/libero/"
+                "libero_all_no_noops_1.0.0_lerobot_10hz_dino_gram_vitl16_l24_256"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=64,
+        gradient_accumulation_steps=1,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("ckpts/openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="ckpts/openpi-assets/checkpoints_torch/pi05_base",
+        num_train_steps=50_000,
+    ),
+    #: gram matrix low-memory finetuning (wo. img aug)
     TrainConfig(
         name="pi05_libero_gram_low_mem_finetune",
         model=pi0_gram.Pi0GramConfig(
@@ -1047,7 +1085,7 @@ _CONFIGS = [
             dtype="bfloat16",
             state_as_loc_tokens=False,
             gram_loss_weight=0.5,
-            gram_layer=12,
+            gram_layers=[12],
             gram_remove_negative=True,
             gram_use_wrist=True,
             use_augmentation=False,

@@ -18,9 +18,9 @@ from openpi.shared import array_typing as at
 
 
 class _GramBlock(_gemma.Block):
-    """Gemma block that keeps only the requested post-block hidden state in the scan carry."""
+    """Gemma block that keeps only the requested post-block hidden states in the scan carry."""
 
-    capture_layer: int = 11
+    capture_layers: tuple[int, ...] = (11,)
 
     @nn.compact
     def __call__(
@@ -28,8 +28,13 @@ class _GramBlock(_gemma.Block):
     ):  # noqa: FBT002
         xs, captured_hidden = carry
         xs, layer_kv_cache = super().__call__(xs, kv_cache, positions, attn_mask, adarms_cond, deterministic)
+        capture_mask = jnp.asarray(self.capture_layers) == layer_index
         captured_hidden = jax.tree.map(
-            lambda captured, current: jnp.where(layer_index == self.capture_layer, current, captured),
+            lambda captured, current: jnp.where(
+                capture_mask.reshape((-1,) + (1,) * current.ndim),
+                current[None, ...],
+                captured,
+            ),
             captured_hidden,
             xs,
         )
@@ -37,9 +42,9 @@ class _GramBlock(_gemma.Block):
 
 
 class _GramGemmaModule(_gemma.Module):
-    """Gemma module with the original parameter tree plus one captured intermediate state."""
+    """Gemma module with the original parameter tree plus selected intermediate states."""
 
-    capture_layer: int = 11
+    capture_layers: tuple[int, ...] = (11,)
 
     def setup(self):
         assert all(config.depth == self.configs[0].depth for config in self.configs)
@@ -65,7 +70,7 @@ class _GramGemmaModule(_gemma.Module):
             dropout=self.dropout,
             dropout_bdims=self.dropout_bdims,
             detach_vlm_for_flow=self.detach_vlm_for_flow,
-            capture_layer=self.capture_layer,
+            capture_layers=self.capture_layers,
         )
         self.final_norms = [
             _gemma.RMSNorm(name=_gemma._name("final_norm", i))  # noqa: SLF001
@@ -88,7 +93,10 @@ class _GramGemmaModule(_gemma.Module):
         if adarms_cond is None:
             adarms_cond = [None] * len(self.configs)
 
-        captured_hidden = jax.tree.map(jnp.zeros_like, embedded)
+        captured_hidden = jax.tree.map(
+            lambda value: jnp.zeros((len(self.capture_layers), *value.shape), dtype=value.dtype),
+            embedded,
+        )
         (embedded, captured_hidden), kv_cache = self.layers(
             (embedded, captured_hidden),
             kv_cache,
@@ -112,7 +120,7 @@ class Pi0GramConfig(pi0_config.Pi0Config):
     """Pi0 configuration isolated to the Gram distillation experiment."""
 
     gram_loss_weight: float = 0.1
-    gram_layer: int = 12
+    gram_layers: list[int] = dataclasses.field(default_factory=lambda: [12])
     gram_remove_negative: bool = True
     gram_use_wrist: bool = True
 
@@ -121,8 +129,12 @@ class Pi0GramConfig(pi0_config.Pi0Config):
         if self.gram_loss_weight < 0:
             raise ValueError("gram_loss_weight must be non-negative")
         depth = _gemma.get_config(self.paligemma_variant).depth
-        if not 1 <= self.gram_layer <= depth:
-            raise ValueError(f"gram_layer must be in [1, {depth}] for {self.paligemma_variant}")
+        if not self.gram_layers:
+            raise ValueError("gram_layers must not be empty")
+        if len(set(self.gram_layers)) != len(self.gram_layers):
+            raise ValueError("gram_layers must not contain duplicates")
+        if any(not 1 <= layer <= depth for layer in self.gram_layers):
+            raise ValueError(f"gram_layers must contain values in [1, {depth}] for {self.paligemma_variant}")
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0Gram":
@@ -145,7 +157,7 @@ class Pi0GramConfig(pi0_config.Pi0Config):
 
 
 class Pi0Gram(pi0.Pi0):
-    """Pi0 with relation supervision on layer-12 PaliGemma image tokens."""
+    """Pi0 with relation supervision on selected PaliGemma image-token layers."""
 
     def __init__(self, config: Pi0GramConfig, rngs: nnx.Rngs):
         _model.BaseModel.__init__(self, config.action_dim, config.action_horizon, config.max_token_len)
@@ -153,7 +165,7 @@ class Pi0Gram(pi0.Pi0):
         self.aux_loss_weight = config.aux_loss_weight
         self.aux_ce_chunk_size = config.aux_ce_chunk_size
         self.gram_loss_weight = config.gram_loss_weight
-        self.gram_layer = config.gram_layer
+        self.gram_layers = tuple(config.gram_layers)
         self.gram_remove_negative = config.gram_remove_negative
         self.gram_use_wrist = config.gram_use_wrist
         self.use_augmentation = config.use_augmentation
@@ -166,7 +178,7 @@ class Pi0Gram(pi0.Pi0):
                 embed_dtype=config.dtype,
                 adarms=config.pi05,
                 detach_vlm_for_flow=config.detach_vlm_for_flow,
-                capture_layer=config.gram_layer - 1,
+                capture_layers=tuple(layer - 1 for layer in config.gram_layers),
             )
         )
         llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True] if config.pi05 else [False, False])
@@ -247,39 +259,40 @@ class Pi0Gram(pi0.Pi0):
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
         action_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-        # The scan carry retains only the configured post-block state; layer 12 means output of block index 11.
-        layer_hidden = hidden_states[0].astype(jnp.float32)
+        # The scan carry retains only the configured post-block states; layer 12 means output of block index 11.
+        layer_hidden_states = hidden_states[0].astype(jnp.float32)
         gram_loss_sum = jnp.zeros(actions.shape[0], dtype=jnp.float32)
-        gram_view_count = jnp.zeros(actions.shape[0], dtype=jnp.float32)
-        token_offset = 0
-        for name in observation.images:
-            target_gram = observation.dino_gram.get(name)
-            tokens_per_image = 256 if target_gram is None else target_gram.shape[-1]
-            image_hidden = layer_hidden[:, token_offset : token_offset + tokens_per_image]
-            token_offset += tokens_per_image
-            if target_gram is None:
-                continue
-            if not self.gram_use_wrist and "wrist" in name:
-                continue
-            if image_hidden.shape[1] != target_gram.shape[-1]:
-                raise ValueError(
-                    f"Gram token mismatch for {name}: student has {image_hidden.shape[1]}, "
-                    f"teacher has {target_gram.shape[-1]}"
-                )
+        gram_term_count = jnp.zeros(actions.shape[0], dtype=jnp.float32)
+        for layer_hidden in layer_hidden_states:
+            token_offset = 0
+            for name in observation.images:
+                target_gram = observation.dino_gram.get(name)
+                tokens_per_image = 256 if target_gram is None else target_gram.shape[-1]
+                image_hidden = layer_hidden[:, token_offset : token_offset + tokens_per_image]
+                token_offset += tokens_per_image
+                if target_gram is None:
+                    continue
+                if not self.gram_use_wrist and "wrist" in name:
+                    continue
+                if image_hidden.shape[1] != target_gram.shape[-1]:
+                    raise ValueError(
+                        f"Gram token mismatch for {name}: student has {image_hidden.shape[1]}, "
+                        f"teacher has {target_gram.shape[-1]}"
+                    )
 
-            image_hidden = image_hidden * jax.lax.rsqrt(
-                jnp.sum(jnp.square(image_hidden), axis=-1, keepdims=True) + 1e-6
-            )
-            student_gram = image_hidden @ jnp.swapaxes(image_hidden, -1, -2)
-            target_gram = target_gram.astype(jnp.float32)
-            if self.gram_remove_negative:
-                student_gram = jax.nn.relu(student_gram)
-                target_gram = jax.nn.relu(target_gram)
-            view_loss = jnp.mean(jnp.square(student_gram - target_gram), axis=(-2, -1))
-            view_mask = observation.image_masks[name].astype(jnp.float32)
-            gram_loss_sum += view_loss * view_mask
-            gram_view_count += view_mask
-        gram_loss = gram_loss_sum / jnp.maximum(gram_view_count, 1.0)
+                image_hidden = image_hidden * jax.lax.rsqrt(
+                    jnp.sum(jnp.square(image_hidden), axis=-1, keepdims=True) + 1e-6
+                )
+                student_gram = image_hidden @ jnp.swapaxes(image_hidden, -1, -2)
+                target_gram = target_gram.astype(jnp.float32)
+                if self.gram_remove_negative:
+                    student_gram = jax.nn.relu(student_gram)
+                    target_gram = jax.nn.relu(target_gram)
+                view_loss = jnp.mean(jnp.square(student_gram - target_gram), axis=(-2, -1))
+                view_mask = observation.image_masks[name].astype(jnp.float32)
+                gram_loss_sum += view_loss * view_mask
+                gram_term_count += view_mask
+        gram_loss = gram_loss_sum / jnp.maximum(gram_term_count, 1.0)
 
         auxiliary_loss = jnp.zeros(action_loss.shape[:-1], dtype=jnp.float32)
         if use_auxiliary:
