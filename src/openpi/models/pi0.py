@@ -69,6 +69,7 @@ class Pi0(_model.BaseModel):
         self.pi05 = config.pi05
         self.aux_loss_weight = config.aux_loss_weight
         self.aux_ce_chunk_size = config.aux_ce_chunk_size
+        self.use_augmentation = config.use_augmentation
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -248,7 +249,9 @@ class Pi0(_model.BaseModel):
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ):
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
-        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        observation = _model.preprocess_observation(
+            preprocess_rng, observation, train=train and self.use_augmentation
+        )
         use_auxiliary = self.aux_loss_weight > 0 and observation.tokenized_auxiliary is not None
 
         batch_shape = actions.shape[:-2]

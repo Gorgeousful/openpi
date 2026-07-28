@@ -228,12 +228,12 @@ pi05_libero_gram_low_mem_finetune \
 
 
 #: gram
-WANDB_MODE=disabled \
+WANDB_MODE=offline \
 HF_HOME=/data0/luokang/.cache/huggingface \
 HF_LEROBOT_HOME=/data0/luokang/dataset/luokang \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 CUDA_VISIBLE_DEVICES=0,1 \
 python scripts/train.py \
 pi05_libero_gram_low_mem_finetune \
---exp-name=pi05_libero_gram_low_mem_finetune-$(date +%m%d%H%M) \
+--exp-name=pi05_libero_gram_low_mem_finetune-0727 \
 --overwrite

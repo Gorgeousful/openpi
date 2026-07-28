@@ -1014,6 +1014,7 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora", 
             dtype="bfloat16",
             state_as_loc_tokens=False,
+            use_augmentation=True,
         ),
         freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoCustomDataConfig(
@@ -1049,6 +1050,7 @@ _CONFIGS = [
             gram_layer=12,
             gram_remove_negative=True,
             gram_use_wrist=True,
+            use_augmentation=False,
         ),
         freeze_filter=pi0_gram.Pi0GramConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(),
         data=LeRobotLiberoGramDataConfig(

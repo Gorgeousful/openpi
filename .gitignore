@@ -3,6 +3,7 @@
 checkpoints/
 data/
 wandb/
+__test__/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -41,6 +41,8 @@ class Pi0Config(_model.BaseModelConfig):
     aux_fast_tokenizer_path: str = "physical-intelligence/fast"
     # Stop flow loss from updating the VLM prefix while still training the action expert.
     detach_vlm_for_flow: bool = False
+    # Whether to apply random image augmentation during training.
+    use_augmentation: bool = True
 
     pytorch_compile_mode: str | None = "max-autotune"
 

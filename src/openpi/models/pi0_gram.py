@@ -156,6 +156,7 @@ class Pi0Gram(pi0.Pi0):
         self.gram_layer = config.gram_layer
         self.gram_remove_negative = config.gram_remove_negative
         self.gram_use_wrist = config.gram_use_wrist
+        self.use_augmentation = config.use_augmentation
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -202,8 +203,14 @@ class Pi0Gram(pi0.Pi0):
         if observation.dino_gram is None:
             raise ValueError("Pi0Gram requires offline DINOv3 targets in observation.dino_gram")
 
-        # Offline targets describe the unaugmented image geometry, so spatial augmentation must stay disabled.
-        observation = _model.preprocess_observation(None, observation, train=False)
+        use_augmentation = train and self.use_augmentation
+        if use_augmentation:
+            preprocess_rng, rng = jax.random.split(rng)
+        else:
+            preprocess_rng = None
+        observation = _model.preprocess_observation(
+            preprocess_rng, observation, train=use_augmentation
+        )
         noise_rng, time_rng = jax.random.split(rng, 2)
         use_auxiliary = self.aux_loss_weight > 0 and observation.tokenized_auxiliary is not None
 

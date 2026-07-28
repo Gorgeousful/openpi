@@ -25,9 +25,6 @@ class LiberoGramInputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         base_image = _parse_image(data["observation/image"])
         wrist_image = _parse_image(data["observation/wrist_image"])
-        base_gram = np.asarray(data["dino_gram"]["base"], dtype=np.float16)
-        wrist_gram = np.asarray(data["dino_gram"]["wrist"], dtype=np.float16)
-
         inputs = {
             "state": data["observation/state"],
             "image": {
@@ -40,12 +37,15 @@ class LiberoGramInputs(transforms.DataTransformFn):
                 "left_wrist_0_rgb": np.True_,
                 "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
             },
-            "dino_gram": {
+        }
+        if "dino_gram" in data:
+            base_gram = np.asarray(data["dino_gram"]["base"], dtype=np.float16)
+            wrist_gram = np.asarray(data["dino_gram"]["wrist"], dtype=np.float16)
+            inputs["dino_gram"] = {
                 "base_0_rgb": base_gram,
                 "left_wrist_0_rgb": wrist_gram,
                 "right_wrist_0_rgb": np.zeros_like(base_gram),
-            },
-        }
+            }
         if "actions" in data:
             inputs["actions"] = data["actions"]
         if "prompt" in data:

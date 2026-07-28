@@ -45,3 +45,8 @@ luokang@6024.irmv.top:/data0/luokang/research/openpi/openpi/checkpoints/pi0_oft_
 rsync -avh --progress -e "ssh -p 9981" \
 luokang@sy.irmv.top:/data0/luokang/dataset/luokang/ckpts/openpi/jax/pi05_base \
 /data0/luokang/dataset/luokang/ckpts/openpi/jax
+
+rsync -avh --progress -e "ssh -p 9981" \
+/data0/luokang/dataset/luokang/lerobot/libero/libero_all_no_noops_1.0.0_lerobot_10hz_dino_gram_vitl16_l24_256 \
+luokang@sy.irmv.top:/data0/luokang/dataset/luokang/lerobot/libero/
+                
